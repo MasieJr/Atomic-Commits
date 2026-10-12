@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import 'router.dart';
 import 'theme/app_theme.dart';
 
 class AtomicCommitsApp extends StatelessWidget {
@@ -7,11 +8,11 @@ class AtomicCommitsApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
+    return MaterialApp.router(
       title: 'Atomic Commits',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
-      home: const Scaffold(body: Center(child: Text('Atomic Commits'))),
+      routerConfig: appRouter,
     );
   }
 }
