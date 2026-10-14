@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../../app/router.dart';
-import '../../../../app/theme/app_colours.dart';
-import '../../../../app/theme/app_spacing.dart';
-import '../../../../core/widgets/app_header.dart';
+import 'package:atomic_commits/app/router.dart';
+import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/app/theme/app_spacing.dart';
+import 'package:atomic_commits/core/widgets/app_header.dart';
 
 class MerchantHomeScreen extends StatelessWidget {
   const MerchantHomeScreen({super.key});
@@ -16,36 +16,23 @@ class MerchantHomeScreen extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [
-          const Align(
-            alignment: Alignment.centerLeft,
-            child: Chip(
-              avatar: Icon(Icons.wifi, size: 18, color: AppColours.primary),
-              label: Text('Online'),
-            ),
-          ),
-
-          const SizedBox(height: 24),
-
+          const SizedBox(height: 20),
           Text(
             'Collect a payment',
             style: Theme.of(context).textTheme.headlineMedium,
           ),
-
           const SizedBox(height: 20),
-
           const Text(
-            "Scan the customer's QR or "
+            "Scan payment QR code from the customer or "
             "enter their ID and code.",
             style: TextStyle(color: AppColours.textSecondary),
           ),
-
-          const SizedBox(height: 24),
-
+          const SizedBox(height: 20),
           SizedBox(
             height: 92,
             child: ElevatedButton.icon(
               onPressed: () => context.push(AppRoutes.merchantScan),
-              icon: const Icon(Icons.qr_code_scanner, size: 28),
+              icon: const Icon(Icons.qr_code_rounded, size: 30),
               label: const Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 crossAxisAlignment: CrossAxisAlignment.start,
