@@ -17,8 +17,14 @@ abstract final class AppRoutes {
 }
 
 final appRouter = GoRouter(
-  initialLocation: AppRoutes.payer,
+  // initialLocation: AppRoutes.payer,
+  initialLocation: AppRoutes.merchant,
   routes: [
+    /**
+     * Payer screens
+     * /payer     ->  payer homePage
+     * /payer/qr  ->  payer QR screen
+     */
     GoRoute(
       path: AppRoutes.payer,
       name: 'payer',
@@ -31,6 +37,13 @@ final appRouter = GoRouter(
         ),
       ],
     ),
+
+    /**
+     * Merchant Screens
+     * /merchant              -> merchant homePage
+     * /merchant/scan         -> merchant qr-scan page
+     * /merchant/enter-code   -> merchant enter code page
+     */
     GoRoute(
       path: AppRoutes.merchant,
       name: 'merchant',
