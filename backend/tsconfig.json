@@ -11,5 +11,5 @@
     "skipLibCheck": true,
     "types": ["node"]
   },
-  "include": ["server.ts"]
+  "include": ["server.ts", "migrate.ts", "src/**/*.ts"]
 }
