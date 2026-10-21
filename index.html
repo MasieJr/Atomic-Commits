@@ -1,0 +1,392 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="Atomic Commits — offline payment authorization over Open Payments.">
+<meta name="theme-color" content="#f3f0e8">
+<title>Atomic Commits — Open Payments prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#f3f0e8;--surface:#fbf8f1;--card:#fffdf8;--ink:#171714;--muted:#706d65;--line:#d8d2c6;
+  --gold:#c89b59;--gold-2:#a97838;--green:#226844;--green-bg:#e4efe7;--red:#a0473d;--red-bg:#f6e6e2;
+  --blue:#315f86;--blue-bg:#e6eef4;--max:1180px;--sans:"DM Sans",sans-serif;--display:"Manrope",sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,monospace
+}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--ink);font:400 16px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;opacity:.18;background-image:linear-gradient(rgba(23,23,20,.06) 1px,transparent 1px),linear-gradient(90deg,rgba(23,23,20,.06) 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(to bottom,#000 0,transparent 720px)}
+a{color:inherit;text-decoration:none}button,input,select{font:inherit}button{cursor:pointer}h1,h2,h3,p{margin:0}h1,h2,h3{font-family:var(--display);letter-spacing:-.04em}code,.mono{font-family:var(--mono)}
+.shell{width:min(calc(100% - 40px),var(--max));margin-inline:auto}.header{min-height:76px;display:flex;align-items:center;justify-content:space-between;gap:20px;border-bottom:1px solid var(--line)}
+.brand{font:800 1.2rem/1 var(--display);letter-spacing:-.05em}.brand b{color:var(--gold-2)}.header-right{display:flex;gap:8px}.pill{border:1px solid var(--line);background:rgba(255,253,248,.7);padding:7px 10px;border-radius:999px;color:var(--muted);font:600 .72rem/1 var(--mono)}.pill.live{color:var(--green);border-color:#aec9b7;background:var(--green-bg)}
+.hero{padding:86px 0 72px;max-width:980px}.kicker{font:600 .74rem/1 var(--mono);text-transform:uppercase;letter-spacing:.12em;color:var(--gold-2);margin-bottom:20px}
+h1{font-size:clamp(3.8rem,8.2vw,7.2rem);line-height:.92;max-width:12ch}.hero-copy{max-width:760px;color:var(--muted);font-size:1.12rem;margin-top:26px}
+.hero-meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:30px}.hero-meta span{border:1px solid var(--line);background:var(--surface);padding:9px 11px;border-radius:6px;font:600 .76rem/1 var(--mono);color:#4f4c46}
+.flow{background:var(--ink);color:#f7f3eb;border-block:1px solid #000}.flow-inner{display:grid;grid-template-columns:repeat(4,1fr)}.flow-step{padding:26px 24px;position:relative;min-height:130px}.flow-step+.flow-step{border-left:1px solid #3c3a34}.flow-step:not(:last-child)::after{content:"→";position:absolute;right:-9px;top:28px;color:#d5ad72;background:var(--ink);padding:0 3px;z-index:2;font-family:var(--mono)}.flow-step .n{display:block;color:#d5ad72;font:600 .72rem/1 var(--mono);margin-bottom:13px}.flow-step strong{display:block;font:700 1rem/1.2 var(--display)}.flow-step p{color:#aaa79f;font-size:.84rem;margin-top:7px}
+.section{padding:104px 0}.section-head{display:grid;grid-template-columns:1fr 420px;gap:60px;align-items:end;margin-bottom:42px}.section-head h2{font-size:clamp(2.7rem,5vw,4.8rem);line-height:.96}.section-head>p{color:var(--muted);max-width:420px}
+
+.phone-demo{display:grid;grid-template-columns:1fr 150px 1fr;align-items:center;gap:20px;padding:34px 34px 42px;border:1px solid var(--line);border-radius:20px;background:linear-gradient(180deg,#fbf8f1 0%,#ece7dc 100%);box-shadow:0 26px 80px rgba(41,34,24,.08)}
+.phone-column{display:grid;justify-items:center}.phone-label{width:min(100%,350px);display:flex;justify-content:space-between;align-items:center;margin-bottom:12px}.phone-label span{font:700 .72rem/1 var(--mono);letter-spacing:.12em}.phone-label small{color:var(--muted);font-size:.75rem}
+.phone{width:min(100%,350px)}.phone-shell{position:relative;background:#11110f;border:1px solid #2f2d29;border-radius:46px;padding:10px;box-shadow:0 24px 55px rgba(20,17,12,.22),inset 0 0 0 1px #383631}
+.phone-screen{min-height:650px;background:#fcfbf7;border-radius:36px;padding:48px 19px 22px;position:relative;overflow:hidden}.phone-screen::before{content:"";position:absolute;inset:0;pointer-events:none;background:linear-gradient(145deg,rgba(255,255,255,.52),transparent 28%)}
+.island{position:absolute;z-index:4;top:18px;left:50%;transform:translateX(-50%);width:86px;height:24px;border-radius:999px;background:#050505}.phone-status{position:absolute;z-index:4;top:19px;left:27px;right:25px;color:#fff;font-size:.67rem;display:flex;justify-content:space-between;pointer-events:none}.home-indicator{position:absolute;bottom:16px;left:50%;transform:translateX(-50%);width:105px;height:4px;border-radius:99px;background:#111}
+.app-nav{display:flex;align-items:center;justify-content:space-between;margin-bottom:28px;position:relative;z-index:1}.app-mark{width:34px;height:34px;border-radius:10px;background:var(--ink);color:#fff;display:grid;place-items:center;font:700 .7rem/1 var(--mono)}
+.signal{display:flex;align-items:center;gap:6px;border-radius:99px;padding:6px 9px;font:600 .64rem/1 var(--mono)}.signal i{width:6px;height:6px;border-radius:50%}.signal.off{background:#f4e7d1;color:#8d612e}.signal.off i{background:#bd8545}.signal.on{background:var(--green-bg);color:var(--green)}.signal.on i{background:var(--green)}
+.screen-copy{position:relative;z-index:1;margin-bottom:18px}.screen-eyebrow{font:600 .65rem/1 var(--mono);letter-spacing:.1em;color:var(--gold-2)}.screen-copy h3{font-size:1.65rem;line-height:1.05;margin-top:8px}.screen-copy p{color:var(--muted);font-size:.84rem;margin-top:8px}
+.payment-code-card{position:relative;z-index:1;border:1px solid #ded7ca;border-radius:18px;background:#fff;padding:18px;box-shadow:0 12px 26px rgba(45,38,28,.06)}.payer-id{display:flex;align-items:center;justify-content:space-between;color:#888177;font:600 .65rem/1 var(--mono)}.payer-id strong{color:var(--gold-2);font-size:.8rem}.digits{font:800 2.85rem/1 var(--display);letter-spacing:.08em;margin-top:14px;text-align:center}.timer{height:5px;background:#ebe5db;border-radius:99px;overflow:hidden;margin-top:16px}.timer div{height:100%;width:100%;background:linear-gradient(90deg,var(--gold-2),#ddb779)}.timer-text{display:flex;justify-content:space-between;gap:8px;margin-top:7px;color:#8b857c;font:500 .58rem/1.3 var(--mono)}
+.policy-card{position:relative;z-index:1;display:grid;grid-template-columns:repeat(3,1fr);gap:7px;margin-top:11px}.policy-card div{border:1px solid #e2dbcf;border-radius:12px;background:#f8f5ef;padding:10px}.policy-card span{display:block;color:#918b82;font:600 .54rem/1 var(--mono)}.policy-card strong{display:block;font-size:.75rem;margin-top:6px}
+.phone-button{position:relative;z-index:1;width:100%;border:0;border-radius:14px;min-height:48px;margin-top:16px;background:var(--ink);color:#fff;font-weight:700;transition:.18s transform,.18s opacity}.phone-button:hover{transform:translateY(-1px)}.phone-button:disabled{opacity:.35;cursor:not-allowed;transform:none}.phone-button.accent{background:var(--gold);color:#1b1813}.phone-help{text-align:center;color:#9a948b;font-size:.68rem;margin-top:9px;position:relative;z-index:1}
+.handoff{display:grid;justify-items:center;align-content:center;text-align:center;position:relative;min-height:300px}.handoff-line{position:absolute;left:0;right:0;top:50%;border-top:1px dashed #aaa294}.handoff-chip{z-index:1;min-width:112px;background:#fff;border:1px solid var(--line);border-radius:15px;padding:11px 13px;box-shadow:0 10px 28px rgba(45,37,25,.08);font-family:var(--mono)}.handoff-chip span{display:block;color:var(--gold-2);font-size:.65rem}.handoff-chip strong{display:block;margin-top:4px;letter-spacing:.08em}.handoff p{position:absolute;top:calc(50% + 48px);color:var(--muted);font-size:.7rem;max-width:130px}
+.merchant-fields{position:relative;z-index:1}.merchant-fields label{display:grid;gap:6px;margin-bottom:10px}.merchant-fields label>span{font:600 .58rem/1 var(--mono);text-transform:uppercase;letter-spacing:.08em;color:#878178}.merchant-fields input{width:100%;border:1px solid #ddd6ca;border-radius:11px;background:#fff;padding:10px 11px;outline:none;font-size:.82rem}.merchant-fields input:focus{border-color:var(--gold-2);box-shadow:0 0 0 3px rgba(169,120,56,.1)}.amount-field>div{display:flex;align-items:center;border:1px solid #ddd6ca;border-radius:11px;background:#fff;padding-left:11px}.amount-field>div:focus-within{border-color:var(--gold-2);box-shadow:0 0 0 3px rgba(169,120,56,.1)}.amount-field b{color:#8b857c}.amount-field input{border:0;padding-left:7px;box-shadow:none!important}
+.replay-link{position:relative;z-index:1;width:100%;border:0;background:transparent;color:var(--muted);font-size:.72rem;text-decoration:underline;text-underline-offset:3px;margin-top:10px}.replay-link:disabled{opacity:.35;cursor:not-allowed}
+.receipt{position:relative;z-index:1;margin-top:14px;border:1px solid #ddd6ca;border-radius:13px;background:#f7f4ee;padding:11px 12px;display:flex;align-items:center;gap:10px}.receipt-dot{width:9px;height:9px;border-radius:50%;background:#c7c1b7;flex:none}.receipt strong{display:block;font-size:.78rem}.receipt small{display:block;color:var(--muted);font-size:.66rem;margin-top:2px}.receipt.ok{background:var(--green-bg);border-color:#b7cdbd}.receipt.ok .receipt-dot{background:var(--green)}.receipt.ok strong{color:var(--green)}.receipt.bad{background:var(--red-bg);border-color:#d9b4ad}.receipt.bad .receipt-dot{background:var(--red)}.receipt.bad strong{color:var(--red)}.receipt.pending{background:#f7ead7;border-color:#dbc29a}.receipt.pending .receipt-dot{background:var(--gold-2)}
+.trace-panel{margin-top:22px;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:var(--surface)}.trace-head{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:16px 18px;border-bottom:1px solid var(--line)}.trace-head>div{display:grid;gap:4px}.trace-kicker{font:600 .63rem/1 var(--mono);color:var(--gold-2)}.trace-head strong{font-size:.88rem}.trace-tag{font:600 .62rem/1 var(--mono);color:var(--muted)}.trace-grid{display:grid;grid-template-columns:1.15fr .85fr}.trace-log{min-height:180px;max-height:180px;overflow:auto;background:#20201d;color:#ddd9d1;padding:17px;font:500 .72rem/1.7 var(--mono)}.trace-log .ok{color:#9cc4a6}.trace-log .bad{color:#d4928a}.trace-log .op{color:#d7ad72}.trace-log .dim{color:#85827b}
+.permission{padding:20px;background:#fff}.permission h3{font-size:1rem}.permission p{font-size:.8rem;color:var(--muted);margin-top:7px}.grant-row{display:flex;justify-content:space-between;gap:14px;margin-top:17px;color:#656159;font:600 .68rem/1 var(--mono)}.meter{height:7px;background:#e7e1d7;margin-top:9px;border-radius:99px;overflow:hidden}.meter div{height:100%;width:0;background:var(--gold-2);transition:.3s}
+.explainer{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:22px}.explain-card{border:1px solid var(--line);background:var(--surface);border-radius:12px;padding:24px}.explain-card h3{font-size:1.12rem}.grant-flow{margin-top:17px;border-top:1px solid var(--line)}.grow{display:grid;grid-template-columns:110px 1fr;gap:17px;padding:13px 0;border-bottom:1px solid var(--line)}.grow strong{font:600 .68rem/1.3 var(--mono);text-transform:uppercase;letter-spacing:.07em;color:#615d56}.grow p{color:var(--muted);font-size:.84rem}
+.setup-section{background:var(--ink);color:#f7f3eb}.setup-head{display:grid;grid-template-columns:.8fr 1.2fr;gap:70px}.setup-head .kicker{color:#d5ad72}.setup-head h2{font-size:clamp(2.8rem,5vw,4.8rem);line-height:.96}.setup-list{border-top:1px solid #3b3934}.setup-item{display:grid;grid-template-columns:52px 1fr;gap:16px;padding:23px 0;border-bottom:1px solid #3b3934}.setup-item>span{font:600 .7rem/1.4 var(--mono);color:#d5ad72}.setup-item h3{font-size:1rem}.setup-item p{color:#aaa79f;font-size:.87rem;margin-top:5px}
+.tech-grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}.tech-card{border:1px solid var(--line);background:var(--surface);border-radius:10px;padding:25px}.tech-card h3{font-size:1.12rem}.tech-card>p{color:var(--muted);font-size:.88rem;margin-top:8px}.code-block{margin-top:18px;background:#20201d;color:#e8e4db;border-radius:7px;padding:16px;font:500 .74rem/1.7 var(--mono);white-space:pre-wrap}.security{margin-top:18px;display:grid;gap:10px}.security div{display:grid;grid-template-columns:120px 1fr;gap:14px;font-size:.84rem}.security strong{font:600 .7rem/1.3 var(--mono)}.security span{color:var(--muted)}.window-table{margin-top:18px;border-top:1px solid var(--line)}.window-row{display:grid;grid-template-columns:100px 1fr;gap:16px;padding:12px 0;border-bottom:1px solid var(--line);font-size:.84rem}.window-row strong{font:600 .7rem/1.3 var(--mono)}.window-row span{color:var(--muted)}.note-blue{border-left:3px solid var(--blue);background:var(--blue-bg);padding:13px 14px;margin-top:17px;font-size:.82rem;color:#38536a}
+.cost{background:var(--surface);border-block:1px solid var(--line)}.cost-box{display:grid;grid-template-columns:1fr 1fr;gap:50px;align-items:center}.range-head{display:flex;justify-content:space-between;gap:20px;margin-bottom:10px;color:var(--muted);font-size:.83rem}input[type=range]{width:100%;accent-color:var(--gold-2)}.calc-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}.calc{border:1px solid var(--line);background:var(--card);border-radius:7px;padding:18px}.calc strong{display:block;font:800 1.7rem/1 var(--display)}.calc span{display:block;color:var(--muted);font-size:.74rem;margin-top:5px}.footnote{color:var(--muted);font-size:.76rem;margin-top:12px}
+footer{border-top:1px solid var(--line);padding:28px 0 36px;display:grid;grid-template-columns:1fr auto;gap:20px;color:var(--muted);font-size:.8rem}
+@media(max-width:1000px){.phone-demo{grid-template-columns:1fr;gap:30px}.handoff{min-height:90px}.handoff-line{top:50%;left:50%;right:auto;height:100%;border-top:0;border-left:1px dashed #aaa294}.handoff p{top:calc(50% + 35px)}.trace-grid,.explainer,.tech-grid,.cost-box{grid-template-columns:1fr}.permission{border-top:1px solid var(--line)}.section-head,.setup-head{grid-template-columns:1fr;gap:28px}.flow-inner{grid-template-columns:1fr 1fr}.flow-step:nth-child(3){border-left:0;border-top:1px solid #3c3a34}.flow-step:nth-child(4){border-top:1px solid #3c3a34}.flow-step::after{display:none}}
+@media(max-width:640px){.shell{width:min(calc(100% - 26px),var(--max))}.header-right .pill:not(.live){display:none}.hero{padding:58px 0 54px}h1{font-size:3.65rem}.flow-inner{grid-template-columns:1fr}.flow-step+.flow-step{border-left:0;border-top:1px solid #3c3a34}.section{padding:76px 0}.section-head h2,.setup-head h2{font-size:3rem}.phone-demo{padding:22px 10px 30px}.phone{width:min(100%,335px)}.phone-screen{min-height:640px}.trace-head{align-items:flex-start;flex-direction:column}.grow,.security div,.window-row{grid-template-columns:1fr;gap:5px}.calc-grid{grid-template-columns:1fr}footer{grid-template-columns:1fr;gap:7px}}
+
+.code-switch{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#ece6dc;border:1px solid #ddd5c8;padding:4px;border-radius:12px;margin-bottom:12px}
+.code-switch button,.segmented button{border:0;background:transparent;border-radius:8px;padding:8px 10px;color:#7c766d;font:600 .66rem/1 var(--mono)}
+.code-switch button.active,.segmented button.active{background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(40,34,25,.08)}
+.hidden{display:none!important}
+.validity-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;font-size:.66rem}
+.validity-row strong{font:600 .66rem/1.3 var(--mono);color:var(--ink)}
+.validity-row span{color:var(--gold-2);font:600 .64rem/1.3 var(--mono)}
+.qr-card{position:relative;z-index:1;border:1px solid #ded7ca;border-radius:18px;background:#fff;padding:17px;display:grid;justify-items:center;text-align:center;box-shadow:0 12px 26px rgba(45,38,28,.06)}
+.qr-box{width:174px;height:174px;display:grid;place-items:center;background:#fff;padding:3px}
+.qr-box img,.qr-box canvas{max-width:100%;height:auto!important}
+.qr-card>strong{font:600 .67rem/1.3 var(--mono);margin-top:10px}
+.qr-card>span{font-size:.66rem;color:var(--muted);margin-top:4px}
+.duration-picker{position:relative;z-index:1;margin-top:12px}
+.duration-picker>span{display:block;font:600 .6rem/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:#847e75;margin-bottom:7px}
+.segmented{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#ece6dc;border:1px solid #ddd5c8;padding:4px;border-radius:11px}
+.duration-picker small{display:block;color:#918b82;font-size:.62rem;margin-top:6px}
+.merchant-limit{position:relative;z-index:1;margin:12px 0;border:1px solid #ded7ca;border-radius:12px;background:#f8f5ef;padding:11px}
+.merchant-limit>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0}
+.merchant-limit>div+div{border-top:1px solid #e4ddd2}
+.merchant-limit span{font:600 .55rem/1.2 var(--mono);color:#8c857c}
+.merchant-limit strong{font-size:.7rem}
+.merchant-limit p{border-top:1px solid #e4ddd2;padding-top:8px;margin-top:4px;color:#807a71;font-size:.62rem;line-height:1.45}
+.merchant-actions{display:grid;grid-template-columns:.78fr 1.22fr;gap:8px;position:relative;z-index:1}
+.merchant-actions .phone-button{margin-top:0}
+.phone-button.scan{background:#f5f1e9;color:var(--ink);border:1px solid #d9d1c4}
+@media(max-width:640px){.qr-box{width:154px;height:154px}}
+
+.code-switch{position:relative;z-index:1;display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#ece6dc;border:1px solid #ddd5c8;padding:4px;border-radius:12px;margin-bottom:12px}
+.code-switch button,.segmented button{border:0;background:transparent;border-radius:8px;padding:8px 10px;color:#7c766d;font:600 .66rem/1 var(--mono)}
+.code-switch button.active,.segmented button.active{background:#fff;color:var(--ink);box-shadow:0 2px 8px rgba(40,34,25,.08)}
+.hidden{display:none!important}
+.validity-row{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-top:9px;font-size:.66rem}
+.validity-row strong{font:600 .66rem/1.3 var(--mono);color:var(--ink)}
+.validity-row span{color:var(--gold-2);font:600 .64rem/1.3 var(--mono)}
+.qr-card{position:relative;z-index:1;border:1px solid #ded7ca;border-radius:18px;background:#fff;padding:17px;display:grid;justify-items:center;text-align:center;box-shadow:0 12px 26px rgba(45,38,28,.06)}
+.qr-box{width:174px;height:174px;display:grid;place-items:center;background:#fff;padding:3px}
+.qr-box img,.qr-box canvas{max-width:100%;height:auto!important}
+.qr-card>strong{font:600 .67rem/1.3 var(--mono);margin-top:10px}
+.qr-card>span{font-size:.66rem;color:var(--muted);margin-top:4px}
+.duration-picker{position:relative;z-index:1;margin-top:12px}
+.duration-picker>span{display:block;font:600 .6rem/1 var(--mono);text-transform:uppercase;letter-spacing:.06em;color:#847e75;margin-bottom:7px}
+.segmented{display:grid;grid-template-columns:1fr 1fr;gap:4px;background:#ece6dc;border:1px solid #ddd5c8;padding:4px;border-radius:11px}
+.duration-picker small{display:block;color:#918b82;font-size:.62rem;margin-top:6px}
+.merchant-limit{position:relative;z-index:1;margin:12px 0;border:1px solid #ded7ca;border-radius:12px;background:#f8f5ef;padding:11px}
+.merchant-limit>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:5px 0}
+.merchant-limit>div+div{border-top:1px solid #e4ddd2}
+.merchant-limit span{font:600 .55rem/1.2 var(--mono);color:#8c857c}
+.merchant-limit strong{font-size:.7rem}
+.merchant-limit p{border-top:1px solid #e4ddd2;padding-top:8px;margin-top:4px;color:#807a71;font-size:.62rem;line-height:1.45}
+.merchant-actions{display:grid;grid-template-columns:.78fr 1.22fr;gap:8px;position:relative;z-index:1}
+.merchant-actions .phone-button{margin-top:0}
+.phone-button.scan{background:#f5f1e9;color:var(--ink);border:1px solid #d9d1c4}
+@media(max-width:640px){.qr-box{width:154px;height:154px}}
+
+</style>
+</head>
+<body>
+<header class="header shell">
+  <a class="brand" href="#top">Atomic <b>Commits</b></a>
+  <div class="header-right">
+    <span class="pill">OPEN PAYMENTS</span>
+    <span class="pill live">● PROTOTYPE</span>
+  </div>
+</header>
+
+<main id="top">
+  <section class="hero shell">
+    <p class="kicker">Offline authorization · connected settlement</p>
+    <h1>Pay whenever, even offline.</h1>
+    <p class="hero-copy">
+      Atomic Commits lets a payer generate a short-lived payment code without a live connection.
+      A participating merchant submits that code, the amount and their wallet address; Atomic Commits verifies it
+      and settles through Open Payments using permission the payer approved during onboarding.
+    </p>
+    <div class="hero-meta">
+      <span>PAYER CAN BE OFFLINE</span>
+      <span>NO SHOP-BY-SHOP PAIRING</span>
+      <span>30 MIN MAX</span>
+      <span>SINGLE USE</span>
+    </div>
+  </section>
+
+  <section class="flow">
+    <div class="flow-inner shell">
+      <article class="flow-step"><span class="n">01</span><strong>Set up once</strong><p>Connect Atomic Commits to an Open Payments wallet while online.</p></article>
+      <article class="flow-step"><span class="n">02</span><strong>Generate offline</strong><p>The payer phone derives a short code locally from its secret and time.</p></article>
+      <article class="flow-step"><span class="n">03</span><strong>Merchant redeems</strong><p>The shop enters the payer ID, code and amount.</p></article>
+      <article class="flow-step"><span class="n">04</span><strong>Verify + settle</strong><p>Atomic Commits checks the code, blocks replay and sends the payment.</p></article>
+    </div>
+  </section>
+
+  <section class="section shell">
+    <div class="section-head">
+      <div><p class="kicker">Interactive demo</p><h2>Try the actual flow.</h2></div>
+      <p>The phone UI is the product. The trace underneath is there so you can see what the prototype is doing technically.</p>
+    </div>
+
+    <div class="phone-demo">
+      <div class="phone-column">
+        <div class="phone-label"><span>PAYER</span><small>offline after setup</small></div>
+        <div class="phone">
+          <div class="phone-shell">
+            <div class="island"></div>
+            <div class="phone-status"><span>09:41</span><span>▮▮▮ ︎⌁ 91%</span></div>
+            <div class="phone-screen payer-screen">
+              <div class="app-nav">
+                <div class="app-mark">AC</div>
+                <div class="signal off"><i></i> Offline</div>
+              </div>
+
+              <div class="screen-copy">
+                <span class="screen-eyebrow">PAYMENT CODE</span>
+                <h3>Ready to use offline</h3>
+                <p>Your phone can create this without contacting Atomic Commits.</p>
+              </div>
+
+              <div class="code-switch" aria-label="Authorization format">
+                <button class="active" data-view="code">Code</button>
+                <button data-view="qr">QR code</button>
+              </div>
+
+              <div class="payment-code-card" id="codeView">
+                <div class="payer-id">PAYER ID <strong>7K3M</strong></div>
+                <div class="digits" id="buyerCode">------</div>
+                <div class="timer"><div id="timerFill"></div></div>
+                <div class="validity-row">
+                  <strong id="validUntil">Valid until --:--</strong>
+                  <span id="timeLeft">calculating…</span>
+                </div>
+              </div>
+
+              <div class="qr-card hidden" id="qrView">
+                <div id="qrCode" class="qr-box"></div>
+                <strong id="qrValidUntil">Valid until --:--</strong>
+                <span>Same authorization, encoded for scanning.</span>
+              </div>
+
+              <div class="duration-picker">
+                <span>How long can this code be used?</span>
+                <div class="segmented">
+                  <button data-windows="2">Up to 10 min</button>
+                  <button class="active" data-windows="6">Up to 30 min</button>
+                </div>
+                <small id="durationHelp">The exact expiry time is shown above.</small>
+              </div>
+
+              <div class="policy-card">
+                <div><span>MAX PAYMENT</span><strong>R50.00</strong></div>
+                <div><span>EXPIRES</span><strong id="policyExpiry">--:--</strong></div>
+                <div><span>USES</span><strong>1</strong></div>
+              </div>
+
+              <button class="phone-button accent" id="sendBtn">Send to merchant</button>
+              <p class="phone-help">Use the six-digit code or scan the QR. They represent the same authorization.</p>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="handoff">
+        <div class="handoff-line"></div>
+        <div class="handoff-chip" id="handoffChip">
+          <span>7K3M</span>
+          <strong>••••••</strong>
+        </div>
+        <p>No shared secret leaves the payer device.</p>
+      </div>
+
+      <div class="phone-column">
+        <div class="phone-label"><span>MERCHANT</span><small>connected</small></div>
+        <div class="phone">
+          <div class="phone-shell">
+            <div class="island"></div>
+            <div class="phone-status"><span>09:41</span><span>▮▮▮ ︎⌁ 86%</span></div>
+            <div class="phone-screen merchant-screen">
+              <div class="app-nav">
+                <div class="app-mark">AC</div>
+                <div class="signal on"><i></i> Online</div>
+              </div>
+
+              <div class="screen-copy">
+                <span class="screen-eyebrow">NEW PAYMENT</span>
+                <h3>Enter payer code</h3>
+                <p>The merchant only needs the payer ID, six digits and the amount.</p>
+              </div>
+
+              <div class="merchant-fields">
+                <label><span>Payer ID</span><input id="payerId" placeholder="7K3M"></label>
+                <label><span>Code</span><input id="merchantCode" maxlength="6" inputmode="numeric" placeholder="000000"></label>
+                <label class="amount-field"><span>Amount</span><div><b>R</b><input id="amount" type="number" min="0" step=".50" value="24.50"></div></label>
+                <label><span>Merchant wallet</span><input id="wallet" value="$mamas-spaza.example"></label>
+              </div>
+
+              <div class="merchant-limit">
+                <div><span>THIS CODE</span><strong>Max R50</strong></div>
+                <div><span>PAYER'S WALLET PERMISSION</span><strong>R500 / month</strong></div>
+                <p>R500 is the total monthly amount the payer approved Atomic Commits to initiate across all participating merchants. The shop only needs an approve/decline result.</p>
+              </div>
+
+              <div class="merchant-actions">
+                <button class="phone-button scan" id="scanQrBtn">Scan QR</button>
+                <button class="phone-button" id="redeemBtn">Verify & pay</button>
+              </div>
+              <button class="replay-link" id="replayBtn" disabled>Try the same code again</button>
+
+              <div class="receipt" id="verdict">
+                <span class="receipt-dot"></span>
+                <div><strong>Waiting for a code</strong><small>Share one from the payer phone.</small></div>
+              </div>
+            </div>
+            <div class="home-indicator"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="trace-panel">
+      <div class="trace-head">
+        <div><span class="trace-kicker">SERVER TRACE</span><strong>What happened after the merchant tapped pay</strong></div>
+        <span class="trace-tag">SIMULATED OPEN PAYMENTS</span>
+      </div>
+      <div class="trace-grid">
+        <div id="console" class="trace-log"></div>
+        <aside class="permission">
+          <h3>Open Payments permission</h3>
+          <p>The payer approved Atomic Commits once during onboarding to initiate future outgoing payments up to R500 per month.</p>
+          <div class="grant-row"><span id="grantUsed">R0.00 used</span><span>R500 monthly limit</span></div>
+          <div class="meter"><div id="grantFill"></div></div>
+        </aside>
+      </div>
+    </div>
+
+    <div class="explainer">
+      <article class="explain-card">
+        <p class="kicker">What that permission means</p>
+        <h3>The payer does not approve every shop or every purchase.</h3>
+        <div class="grant-flow">
+          <div class="grow"><strong>Setup</strong><p>Atomic Commits requests an interactive outgoing-payment grant. The payer is redirected to their provider and approves a spending limit, for example R500 per month.</p></div>
+          <div class="grow"><strong>After consent</strong><p>Atomic Commits receives an access token tied to that grant. While the grant is valid and within its limit, later outgoing payments do not need another payer approval screen.</p></div>
+          <div class="grow"><strong>At redemption</strong><p>The shop is chosen later. Its wallet address is supplied when the merchant redeems a valid offline code.</p></div>
+        </div>
+      </article>
+
+      <article class="explain-card">
+        <p class="kicker">Two layers of limits</p>
+        <h3>The wallet grant and the offline code are not the same thing.</h3>
+        <div class="grant-flow">
+          <div class="grow"><strong>Open Payments</strong><p>Example: Atomic Commits may initiate up to R500 in outgoing payments during the monthly interval.</p></div>
+          <div class="grow"><strong>Atomic Commits</strong><p>Example: each offline authorization is capped at R50, expires after at most 30 minutes and may only be redeemed once.</p></div>
+          <div class="grow"><strong>Reason</strong><p>The payer can approve the broad wallet permission once while our app applies tighter rules to every offline purchase.</p></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="setup-section section">
+    <div class="setup-head shell">
+      <div><p class="kicker">One setup, many merchants</p><h2>No payer↔shop pairing.</h2></div>
+      <div class="setup-list">
+        <article class="setup-item"><span>01</span><div><h3>Payer registers with Atomic Commits</h3><p>The payer device and Atomic Commits server establish the shared secret used to verify future offline codes.</p></div></article>
+        <article class="setup-item"><span>02</span><div><h3>The payer ID selects the right secret</h3><p>When a merchant submits <span class="mono">7K3M 482193</span>, the server uses <span class="mono">7K3M</span> to locate the payer's verification record.</p></div></article>
+        <article class="setup-item"><span>03</span><div><h3>The merchant supplies the recipient wallet</h3><p>The payer did not need to know or pair with that shop in advance. The shop supplies its wallet at redemption.</p></div></article>
+        <article class="setup-item"><span>04</span><div><h3>Atomic Commits verifies before payment</h3><p>The server checks authenticity, time validity, replay state and transaction limits, then executes the payment using the existing grant.</p></div></article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section shell">
+    <div class="section-head">
+      <div><p class="kicker">Implementation notes</p><h2>How the short code works.</h2></div>
+      <p>The payer ID tells the server which secret to use. The six-digit value proves the payer device knows that secret for a recent 5-minute time window.</p>
+    </div>
+
+    <div class="tech-grid">
+      <article class="tech-card">
+        <h3>Generated locally</h3>
+        <p>No server request is required to create a code after setup.</p>
+        <div class="code-block">timeWindow = floor(now / 5 minutes)
+
+code = truncate6(
+  HMAC(sharedSecret,
+       payerId + timeWindow)
+)
+
+display → 7K3M 482193</div>
+        <div class="security">
+          <div><strong>PAYER ID</strong><span>Selects the payer record and stored verification secret.</span></div>
+          <div><strong>6 DIGITS</strong><span>Easy to type or dictate; protected by expiry, rate limits and transaction caps.</span></div>
+          <div><strong>SECRET</strong><span>Never sent to the merchant.</span></div>
+        </div>
+      </article>
+
+      <article class="tech-card">
+        <h3>Up to 30 minutes</h3>
+        <p>The phone derives a fresh value every five minutes. The server can accept a bounded set of recent windows.</p>
+        <div class="window-table">
+          <div class="window-row"><strong>ROTATE</strong><span>Fresh code every 5 minutes on the payer device.</span></div>
+          <div class="window-row"><strong>VERIFY</strong><span>For a 30-minute maximum, check the current window and previous five.</span></div>
+          <div class="window-row"><strong>CLAIM</strong><span>When a code passes verification, record it as used before attempting the payment.</span></div>
+          <div class="window-row"><strong>REPLAY</strong><span>Any later attempt with the same payer ID + code is rejected.</span></div>
+        </div>
+        <div class="note-blue">The demo rotates every 15 seconds only so the behavior is visible while presenting.</div>
+      </article>
+    </div>
+  </section>
+
+  <section class="cost section">
+    <div class="shell">
+      <div class="section-head">
+        <div><p class="kicker">Payload estimate</p><h2>Keep the low-data claim measurable.</h2></div>
+        <p>This calculator is an application-payload estimate, not total mobile network usage.</p>
+      </div>
+      <div class="cost-box">
+        <div>
+          <div class="range-head"><span>Transactions per day</span><strong id="txnLabel">100</strong></div>
+          <input id="txnSlider" type="range" min="10" max="1000" step="10" value="100">
+          <p class="footnote">Prototype assumption: 10 MB of application payload per 1,000 transactions; 10 MB bundle cost = R2.</p>
+        </div>
+        <div>
+          <div class="calc-grid">
+            <div class="calc"><strong id="dataOut">30 MB</strong><span>payload / month</span></div>
+            <div class="calc"><strong id="costOut">R6.00</strong><span>estimated payload cost / month</span></div>
+          </div>
+          <p class="footnote">A real backend should instrument the Open Payments calls and replace this estimate with measured payload sizes.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="shell">
+  <a class="brand" href="#top">Atomic <b>Commits</b></a>
+  <span>Open Payments hackathon prototype · Cape Town · 2026</span>
+</footer>
+
+</body>
+</html>
