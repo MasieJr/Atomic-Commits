@@ -9,6 +9,10 @@ import {
   startSession,
 } from "../services/session";
 
+/* Precomputed at registration's cost so missing users still incur bcrypt work. */
+const dummyPasswordHash =
+  "$2b$12$Ok44cctT7ytcTIK7YDrAoeywTPKihwrWuiToIlsE4SaKNhO9IOyl6";
+
 /* do a basic shape check else return json */
 function requestBody(body: unknown): Record<string, unknown> {
   /* record = kind of a json, a map like object keyed by string with unkown vals */
@@ -103,8 +107,12 @@ export function createAuthController(
     }
 
     const user = await users.findByEmail(email.trim().toLowerCase());
+    const passwordMatches = await bcrypt.compare(
+      password,
+      user?.password_hash ?? dummyPasswordHash,
+    );
 
-    if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+    if (!user || !passwordMatches) {
       res.status(401).json({ error: "Invalid email or password" });
       return;
     }
