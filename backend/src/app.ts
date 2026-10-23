@@ -1,6 +1,7 @@
 import connectPgSimple from "connect-pg-simple";
 import express from "express";
 import session from "express-session";
+import helmet from "helmet";
 
 import { createAuthController } from "./controllers/auth";
 import { AuthStorageError } from "./errors/auth";
@@ -22,6 +23,7 @@ const PgSessionStore = connectPgSimple(session);
 export function createApp(options: AppOptions = {}) {
   const app = express();
   app.disable("x-powered-by");
+  app.use(helmet());
   app.use(express.json({ limit: "10kb" }));
 
   app.get("/health", (_req, res) => {
