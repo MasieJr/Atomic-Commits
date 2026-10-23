@@ -10,7 +10,10 @@
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
     "db:migrate": "npm run build && node dist/migrate.js",
-    "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js"
+    "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js",
+    "payment:proof-a": "npm run build && node dist/src/commands/payment-proof.js a",
+    "payment:proof-b": "npm run build && node dist/src/commands/payment-proof.js b",
+    "payment:proofs": "npm run build && node dist/src/commands/payment-proof.js both"
   },
   "engines": {
     "node": ">=20"

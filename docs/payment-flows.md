@@ -1,8 +1,10 @@
 # Atomic Commits payment flows
 
-These box-and-arrow flowcharts describe the intended Flutter/backend payment flow. The detailed [sequence diagram](payment-flows.mmd) is retained alongside this document.
+These box-and-arrow flowcharts describe the intended customer/merchant journey. Client screens are external API consumers; the project owner's implementation scope is the backend. The detailed [sequence diagram](payment-flows.mmd) is retained alongside this document.
 
-**Status:** the production flows below are design targets. The current integration implements public wallet lookup and developer-client initialization. It has not yet executed a provider payment. The final section maps the target to the current development implementation.
+**Status:** the production flows below are design targets. Local Test Wallet commands demonstrated a confirmed transfer and bounded grant reuse. App-facing payment endpoints and client onboarding remain pending.
+
+Start with [backend architecture/API exposure](backend-payments.md) for backend scope. The [proofs/theory](payment-proofs.md) and [reproduction guide](payment-reproduction.md) are separate documents; the agent handoff is kept locally.
 
 ## 1. Production target: signup and wallet setup
 
@@ -72,7 +74,7 @@ The provider holds and moves funds. Supabase stores app records and provider ref
 
 ## 3. Conditional production target: payer offline, merchant online
 
-This flow depends on actual provider support for reusable, budget-limited outgoing-payment grants.
+This flow depends on actual provider support for reusable, budget-limited outgoing-payment grants. The local proof has passed for the configured Test Wallet pair; token renewal, additional merchant wallets and device-signed redemption still require their own implementation and verification.
 
 ```mermaid
 flowchart TD
@@ -97,7 +99,7 @@ flowchart TD
 - This phone key is separate from the backend's Open Payments developer key and the provider's spending grant.
 - One successful redemption consumes the credential, even when the actual charge is below its ceiling. The unused difference stays in the payer's provider wallet.
 - Creating a QR does not reserve funds or guarantee a sufficient provider balance. If both devices are offline, a queued action remains pending.
-- Before enabling real offline-payer redemption, prove one transfer and then two distinct payments using one approved aggregate-budget grant without a second consent prompt. Each payment needs its own incoming payment and quote.
+- The [local provider proofs](payment-proofs.md) passed for the tested wallet pair. App-level wallet ownership, device enrollment, single-use redemption and lifecycle/recovery work still have to be implemented.
 
 ## 4. Current development implementation
 
@@ -114,6 +116,16 @@ flowchart TD
         Config["Server-only client wallet address,<br/>key ID and private-key file path"] --> Factory["createOpenPaymentsClient factory"]
         Factory --> Client["New signing-capable SDK client instance<br/>Created on each factory call"]
     end
+    subgraph Proofs["IMPLEMENTED - local Test Wallet payment proofs"]
+        ProofCommand["payment:proof-a, payment:proof-b or payment:proofs"] --> Grants["Signing client and required resource grants"]
+        Grants --> Consent["A: quoted payment approval<br/>B: prior bounded-budget approval<br/>Verified one-use localhost callback"]
+        Consent --> Payments["A: one confirmed transfer<br/>B: fresh incoming/quote per payment,<br/>two transfers with the same grant/token"]
+        Payments --> Confirm["Check outgoing and incoming provider resources<br/>Read the provider's spent counter"]
+        Confirm --> Mode{"B included in this run?"}
+        Mode -->|"Yes"| Budget["Provider rejects the over-budget request<br/>Spent counter remains unchanged"]
+        Budget --> Evidence["Write redacted local receipts<br/>Cancel temporary proof grants"]
+        Mode -->|"No"| Evidence
+    end
 ```
 
 The public lookup command uses the unauthenticated client. It does not call the signing-client factory or use the private key. Both public wallet metadata lookup and initialization with the matched registered developer key have been verified.
@@ -124,10 +136,10 @@ The public lookup command uses the unauthenticated client. It does not call the 
 | Wallet selection | Verified per-user wallet links selected through the API | Temporary `SENDING_WALLET_ADDRESS_URL` and `RECEIVING_WALLET_ADDRESS_URL` inputs for the manual command |
 | SDK identity | Backend-controlled integration credentials, reusable across users | A demo payer Test Wallet supplies the developer identity/key; the factory returns a new client on each call |
 | App authentication | Agreed Flutter/API token contract and protected client storage | BCrypt passwords and PostgreSQL cookie sessions; JWT migration is tracked in issue #4 |
-| Sensitive storage | Backend secret storage, encrypted persisted provider tokens and protected phone keys | Local `.env` and PEM files are plaintext and excluded from Git; provider-token persistence and phone-key enrollment are pending |
+| Sensitive storage | Backend secret storage, encrypted persisted provider tokens and protected phone keys | Local `.env` and PEM files are plaintext; proof grant tokens stay in memory, and redacted receipts are Git-ignored. Persistent provider-token storage and phone-key enrollment are pending |
 | Database | Runtime/migration configuration suited to the deployment | One verified-TLS Supabase connection; the configuration split is deferred in [issue #3](https://github.com/MasieJr/Atomic-Commits/issues/3) |
 | Wallet linking | Provider ownership verification and stored verified links | Public metadata discovery only; the wallet-link API and its URL/SSRF controls are pending |
-| Payment execution | Incoming payment, quote, approved outgoing grant, confirmed outcome and reconciliation | SDK setup only; the single-transfer and reusable-grant proofs are pending |
+| Payment execution | Incoming payment, quote, approved outgoing grant, confirmed outcome and reconciliation through the app API | Local Proofs A and B passed against Test Wallet; app API integration and production persistence/reconciliation are pending |
 | Flutter onboarding | Signup followed by wallet-link/create/later setup | Existing payer/merchant UI; signup, wallet setup and payment API wiring are pending |
 | Offline QR | Enrolled device, signed bounded credential, single-use redemption and provider settlement | Planned; no device enrollment or signed offline redemption is implemented |
 
@@ -135,7 +147,20 @@ The public lookup command uses the unauthenticated client. It does not call the 
 
 - `backend/src/services/open-payments.ts` - URL normalization, SDK client configuration and public metadata lookup.
 - `backend/src/commands/wallet-lookup.ts` - temporary command-line entry point.
+- `backend/src/services/grant-interaction.ts` - one-use loopback callback, interaction-hash verification and grant continuation.
+- `backend/src/services/payment-proof.ts` - provider grants, fresh payment resources, confirmation and budget enforcement checks.
+- `backend/src/services/payment-proof-run.ts` - minor-unit configuration, run lock and redacted local evidence.
+- `backend/src/commands/payment-proof.ts` - ordered Proof A/Proof B orchestration.
 - `backend/.env.example` - server-only developer settings and explicitly temporary two-wallet inputs.
-- `backend/package.json` - the `wallet:lookup` build/run command.
+- `backend/package.json` - the lookup and payment-proof build/run commands.
 
 The temporary sender/receiver settings belong to the manual integration workflow. Flutter users will link their own wallets through the app; they will not manage backend environment files or the backend developer key.
+
+## 5. Backend implementation and proof documents
+
+- [Backend architecture and API boundary](backend-payments.md) - existing routes, proposed payment resources, ownership and an additional standalone `.mmd` flowchart.
+- [Proofs and theory](payment-proofs.md) - the A/B hypotheses, resource/grant model, measured results, encoding/error adaptations and implications for the vision.
+- Local `backend-agent-handoff.md` (not versioned) - method map, draft contracts and questions to ask before extending the product.
+- [Reproduction guide](payment-reproduction.md) - keys/tokens inventory, local `.env` placeholders, funding, exact commands, consent, evidence and interrupted-run recovery.
+
+The proof details and reproduction instructions live in those dedicated documents so this page remains a product-flow overview.

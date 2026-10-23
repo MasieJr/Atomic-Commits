@@ -43,15 +43,8 @@ function requiredEnvironment(name: string): string {
   return value;
 }
 
-/**
- * Build a new SDK client for Atomic Commits' backend integration.
- * The configured developer key identifies our backend to the provider. For this
- * demo, that key is registered to the configured Test Wallet client account.
- *
- * A client instance can be reused across app users. Each outgoing payment uses
- * the intended payer wallet and that payer's approved grant token separately.
- * Constructing this client does not itself authorize spending or move funds.
- */
+// build a new SDK client with our backend's registered key
+// we can reuse it across users - payer wallets and grants go on each payment
 export function createOpenPaymentsClient() {
   return createAuthenticatedClient({
     ...clientOptions,

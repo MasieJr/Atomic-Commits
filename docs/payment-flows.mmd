@@ -1,9 +1,13 @@
 %% Atomic Commits payment flows - architecture target and current dev snapshot.
 %% Snapshot: 23 October 2026. Production-target sections describe planned behavior.
-%% The CURRENT DEV section is the delivered implementation, not a settled payment flow.
+%% The CURRENT DEV section records local proof capabilities, not a production app integration.
 %% JWT migration: issue #4. Separate migration/runtime DB configuration: issue #3.
 %% Implemented SDK wrapper: backend/src/services/open-payments.ts.
 %% Implemented manual command: backend/src/commands/wallet-lookup.ts.
+%% Local payment proofs: backend/src/commands/payment-proof.ts and services/payment-proof*.ts.
+%% Backend ownership/API overview: docs/backend-payments.md. Detailed agent notes remain local.
+%% Separate proof theory and reproduction: docs/payment-proofs.md and docs/payment-reproduction.md.
+%% Client actors show external consumers; Flutter implementation is outside the backend owner's scope.
 
 sequenceDiagram
     autonumber
@@ -158,7 +162,7 @@ sequenceDiagram
     end
 
     rect rgb(255, 235, 235)
-        Note over CLI,Provider: CURRENT DEV - implemented SDK bootstrap and public wallet lookup only
+        Note over CLI,Provider: CURRENT DEV - SDK lookup and local Test Wallet payment proofs
         CLI->>CLI: Read one/two command arguments or temporary SENDING/RECEIVING environment values
         CLI->>SDK: lookupWalletAddresses - normalize pointers and create a public client
         SDK->>Provider: Public wallet-address GET requests with SDK response validation
@@ -166,9 +170,33 @@ sequenceDiagram
         SDK-->>CLI: Wallet IDs, assets/scales and provider server URLs
         CLI->>CLI: Print mode = temporary-integration-lookup and metadata
 
+        CLI->>SDK: Initialize the required resource grants
+        Note over CLI,SDK: A prepares its incoming payment/quote before approval.<br/>B requests prior budget permission without naming a receiver.
+        CLI->>SDK: Request the interactive outgoing grant
+        SDK->>Provider: Signed bounded spending request
+        Provider-->>SDK: Provider consent URL
+        SDK-->>CLI: Print consent URL for the customer
+        User->>Provider: Approve A's quoted debit or B's bounded aggregate budget
+        Provider-->>CLI: Browser redirect to the one-use localhost callback
+        CLI->>CLI: Verify the GNAP interaction hash
+        CLI->>SDK: Continue the approved grant
+        SDK->>Provider: Signed continuation request
+        Provider-->>SDK: Finalized grant and access token
+        SDK-->>CLI: Approved spending scope and limits
+        CLI->>SDK: A executes one transfer, B executes two using one grant/token<br/>B creates its fresh incoming payments/quotes after approval
+        SDK->>Provider: Signed outgoing-payment requests and outcome queries
+        Provider-->>SDK: Confirmed outgoing/incoming amounts and grant spent counter
+        SDK-->>CLI: Provider-confirmed payment evidence
+        CLI->>SDK: Attempt a Test Wallet over-budget request
+        SDK->>Provider: Outgoing request exceeding the remaining approved budget
+        Provider-->>SDK: HTTP 403 unauthorized, spent counter unchanged
+        SDK-->>CLI: Budget refusal and same-token counter evidence
+        CLI->>CLI: Save redacted Git-ignored receipts and cancel temporary grants
+
         Note over API,SDK: createOpenPaymentsClient is a factory that returns a new signing-capable client.<br/>It loads CLIENT_WALLET_ADDRESS_URL, KEY_ID and PRIVATE_KEY_PATH.<br/>The current public lookup command does not use the signing key.
         Note over CLI,SDK: DEV identity: a demo payer Test Wallet supplies the integration identity/key.<br/>Local .env and PEM files are plaintext and excluded from Git.<br/>Production developer keys belong in backend secret storage, not Flutter.
         Note over API,DB: CURRENT: BCrypt passwords, PostgreSQL cookie sessions and verified DB TLS.<br/>JWT migration is tracked in issue #4. DB connection split is deferred in issue #3.
-        Note over Phone,DB: NOT IMPLEMENTED: Flutter signup/wallet linking and its server URL/SSRF controls,<br/>verified user wallet records, provider grant persistence/encryption,<br/>payment execution/reconciliation, phone key enrollment and signed offline redemption.
-        Note over CLI,Provider: Current provider: Interledger Test Wallet with simulated funds and manual funding.<br/>Wallet metadata, matching registered developer keys and SDK initialization are verified.<br/>The single-transfer proof and reusable-grant proof are still pending.
+        Note over Phone,DB: NOT IMPLEMENTED: Flutter signup/wallet linking and its server URL/SSRF controls,<br/>verified user wallet records, encrypted persistent provider grants,<br/>app-integrated payments, durable reconciliation, phone enrollment and offline redemption.
+        Note over CLI,Provider: Current provider: Interledger Test Wallet with simulated funds and manual funding.<br/>Proof A passed at 1.85 ZAR sent / 0.10 EUR received.<br/>Proof B passed at 3.70 ZAR total under one 5.00 ZAR grant, with excess spending rejected.
+        Note over CLI,Provider: Scope: two B payments to the same merchant wallet, not a second merchant.<br/>Advertised access-token expiry was 600 seconds.<br/>Token renewal and the full 25-minute Errand journey remain unverified.
     end
