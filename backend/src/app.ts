@@ -4,6 +4,7 @@ import session from "express-session";
 
 import { createAuthController } from "./controllers/auth";
 import { AuthStorageError } from "./errors/auth";
+import { createAuthRateLimiter } from "./middleware/auth-rate-limit";
 import { errorHandler } from "./middleware/error-handler";
 import { createUserRepository } from "./models/users";
 import { createAuthRouter } from "./routes/auth";
@@ -31,6 +32,7 @@ export function createApp(options: AppOptions = {}) {
     res.setHeader("Cache-Control", "no-store");
     next();
   });
+  app.use("/api/auth", createAuthRateLimiter());
 
   const configured = Boolean(
     options.databaseUrl?.trim() &&
