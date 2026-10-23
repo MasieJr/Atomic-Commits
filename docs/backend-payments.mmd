@@ -1,0 +1,55 @@
+%% Backend architecture target. Existing foundations and proposed API work are labelled.
+%% This is a flowchart, not a claim that the proposed endpoints are implemented.
+flowchart LR
+    subgraph Consumers["API consumers - client team ownership"]
+        Customer["Customer client"]
+        Merchant["Merchant client"]
+        Browser["Provider consent browser"]
+    end
+    subgraph Backend["Atomic Commits backend - backend owner scope"]
+        Auth["App authentication<br/>Cookie API exists, JWT planned"]
+        WalletAPI["PROPOSED wallet-link API<br/>Resolve ownership and verified links"]
+        GrantAPI["PROPOSED grant API<br/>Budget, consent and token lifecycle"]
+        PaymentAPI["PROPOSED payment API<br/>Idempotent intents and status"]
+        Callback["PROPOSED HTTPS callback handler<br/>Stored state and GNAP hash validation"]
+        Workflow["PROPOSED persistent workflow/reconciler<br/>No human-consent wait inside a request"]
+        SDK["Provider SDK library exists<br/>Server identity plus per-operation grant tokens"]
+        DB["Supabase<br/>Users/sessions exist<br/>Wallet/grant/payment records planned"]
+        Secrets["Backend secret storage<br/>Developer key and token-encryption key"]
+    end
+    subgraph ProviderSide["Open Payments provider - Test Wallet in development"]
+        Metadata["Public wallet metadata and JWKS"]
+        Authorization["Authorization server<br/>Owner verification and spending consent"]
+        Resources["Incoming payments, quotes<br/>and outgoing payments"]
+        Funds["Provider accounts and balances<br/>Provider holds and moves funds"]
+    end
+
+    Customer -->|"Sign up / log in"| Auth
+    Customer -->|"Authenticated link request"| WalletAPI
+    Customer -->|"Request bounded permission"| GrantAPI
+    Customer -->|"Request payment / read status"| PaymentAPI
+    Merchant -->|"Authorized receive/redeem request"| PaymentAPI
+    WalletAPI -->|"Resolve app user"| Auth
+    GrantAPI -->|"Resolve app user"| Auth
+    PaymentAPI -->|"Resolve actor and wallet ownership"| Auth
+    WalletAPI --> Workflow
+    GrantAPI --> Workflow
+    PaymentAPI --> Workflow
+    Workflow <-->|"Attempts, links, encrypted tokens and payment states"| DB
+    Secrets -->|"Developer signing key"| SDK
+    Secrets -->|"Protect persisted provider credentials"| Workflow
+    Workflow -->|"Selected wallet, scope and token per operation"| SDK
+    SDK <-->|"Discovery"| Metadata
+    SDK <-->|"Signed grant / continuation / management requests"| Authorization
+    SDK <-->|"Signed requests with provider GNAP tokens"| Resources
+    Authorization -->|"Provider-hosted interaction"| Browser
+    Browser -->|"Correlated redirect callback"| Callback
+    Callback -->|"Resume the stored owner-bound attempt"| Workflow
+    Workflow -->|"Sanitized status and authorization URL"| Customer
+    Workflow -->|"Provider-confirmed status"| Merchant
+    Resources --> Funds
+
+    classDef foundation fill:#e8f5e9,stroke:#2e7d32,color:#17221a;
+    classDef proposed fill:#e8efff,stroke:#315896,color:#17213a;
+    class Auth,SDK foundation;
+    class WalletAPI,GrantAPI,PaymentAPI,Callback,Workflow,DB,Secrets proposed;
