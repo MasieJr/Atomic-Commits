@@ -1,8 +1,6 @@
 param(
     [ValidateSet('all', 'backend', 'frontend')]
     [string]$Target = 'all',
-    [ValidateSet('chrome', 'edge')]
-    [string]$Browser = 'chrome',
     [ValidateRange(1, 65535)]
     [int]$WebPort = 8080,
     [switch]$SetupOnly
@@ -107,13 +105,13 @@ function Get-WebBrowser {
     )
     foreach ($candidate in $chrome) {
         if ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {
-            $env:CHROME_EXECUTABLE = $candidate
-            return 'chrome'
+            return $candidate
         }
     }
     foreach ($parent in @(${env:ProgramFiles(x86)}, $env:ProgramFiles, $env:LOCALAPPDATA)) {
-        if (Test-Path -LiteralPath (Join-Path $parent 'Microsoft\Edge\Application\msedge.exe') -PathType Leaf) {
-            return 'edge'
+        $candidate = Join-Path $parent 'Microsoft\Edge\Application\msedge.exe'
+        if (Test-Path -LiteralPath $candidate -PathType Leaf) {
+            return $candidate
         }
     }
     throw 'Install Chrome or Microsoft Edge to run the Flutter frontend in a browser.'
@@ -124,6 +122,27 @@ function Assert-FreePort([int]$Port) {
     try { $listener.Start() }
     catch { throw "Port $Port is already in use. Stop the existing server or choose another port." }
     finally { $listener.Stop() }
+}
+
+function Wait-Frontend([int]$Port) {
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Write-Host 'Waiting for Flutter to compile and serve the app...'
+    while ($timer.Elapsed.TotalSeconds -lt 180) {
+        $response = $null
+        try {
+            $request = [Net.HttpWebRequest]::Create("http://127.0.0.1:$Port/main.dart.js")
+            $request.Method = 'HEAD'
+            $request.Timeout = 2000
+            $response = $request.GetResponse()
+            if ([int]$response.StatusCode -eq 200) { return }
+        } catch {
+            # Flutter opens its socket before the initial compile is finished.
+        } finally {
+            if ($response) { $response.Close() }
+        }
+        Start-Sleep -Milliseconds 500
+    }
+    throw 'Flutter did not become ready within 3 minutes. Check the frontend terminal for compiler errors.'
 }
 
 try {
@@ -144,7 +163,7 @@ try {
         $Host.UI.RawUI.WindowTitle = 'Atomic Commits frontend'
         Push-Location -LiteralPath $frontend
         try {
-            Invoke-Checked 'flutter.bat' @('run', '-d', $Browser, '--web-hostname', '127.0.0.1', '--web-port', "$WebPort", '--no-pub')
+            Invoke-Checked 'flutter.bat' @('run', '-d', 'web-server', '--web-hostname', '127.0.0.1', '--web-port', "$WebPort", '--no-pub', '--no-web-enable-expression-evaluation', '--no-devtools', '--no-web-resources-cdn')
         } finally { Pop-Location }
         exit 0
     }
@@ -193,15 +212,17 @@ try {
         Invoke-Checked $flutter @('precache', '--web')
         Invoke-Checked $flutter @('pub', 'get')
     } finally { Pop-Location }
-    $device = Get-WebBrowser
+    $browser = Get-WebBrowser
     Write-Host "Backend:  http://localhost:$backendPort"
     Write-Host "Frontend: http://127.0.0.1:$WebPort"
     if ($SetupOnly) { exit 0 }
 
     foreach ($service in @('backend', 'frontend')) {
-        $arguments = '-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File "{0}" -Target {1} -Browser {2} -WebPort {3}' -f $PSCommandPath, $service, $device, $WebPort
+        $arguments = '-NoLogo -NoProfile -NoExit -ExecutionPolicy Bypass -File "{0}" -Target {1} -WebPort {2}' -f $PSCommandPath, $service, $WebPort
         Start-Process -FilePath (Join-Path $PSHOME 'powershell.exe') -ArgumentList $arguments -WorkingDirectory $PSScriptRoot
     }
+    Wait-Frontend $WebPort
+    Start-Process -FilePath $browser -ArgumentList "http://127.0.0.1:$WebPort"
     Write-Host 'Use Ctrl+C in each service window to stop it.'
 } catch {
     if ($Target -eq 'all') {
