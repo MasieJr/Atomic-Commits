@@ -9,12 +9,14 @@
     "dev": "tsx watch server.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "npm run build && node dist/migrate.js"
+    "db:migrate": "npm run build && node dist/migrate.js",
+    "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@interledger/open-payments": "^7.4.0",
     "bcrypt": "^6.0.0",
     "connect-pg-simple": "^10.0.0",
     "dotenv": "^16.6.1",

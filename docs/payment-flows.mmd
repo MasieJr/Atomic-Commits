@@ -1,0 +1,174 @@
+%% Atomic Commits payment flows - architecture target and current dev snapshot.
+%% Snapshot: 23 October 2026. Production-target sections describe planned behavior.
+%% The CURRENT DEV section is the delivered implementation, not a settled payment flow.
+%% JWT migration: issue #4. Separate migration/runtime DB configuration: issue #3.
+%% Implemented SDK wrapper: backend/src/services/open-payments.ts.
+%% Implemented manual command: backend/src/commands/wallet-lookup.ts.
+
+sequenceDiagram
+    autonumber
+    participant CLI as Temporary dev CLI
+    actor User as Customer
+    participant Phone as Customer Flutter app
+    participant Merchant as Merchant Flutter app
+    participant API as Atomic Commits API
+    participant SDK as Backend Open Payments SDK
+    participant DB as Supabase / protected storage
+    participant Provider as Payment account provider
+
+    Note over User,Provider: PRODUCTION TARGET - planned architecture, not current functionality.<br/>The CURRENT DEV section below identifies what is implemented today.
+    Note over API,SDK: Target: reuse a server-side SDK client for the integration.<br/>Its developer signing key identifies Atomic Commits.<br/>Payer wallets and approved provider grant tokens are selected per operation.
+    Note over Phone,Provider: Separate credentials: app login credential, backend developer key,<br/>provider spending grant, and the phone's future offline-signing key.
+
+    rect rgb(230, 240, 255)
+        Note over User,Provider: PRODUCTION TARGET - app signup and wallet linking
+        User->>Phone: Sign up or log in to Atomic Commits
+        Phone->>API: App authentication over HTTPS
+        API->>DB: Save or verify BCrypt password hash and app user
+        API-->>Phone: App login credential - JWT migration is planned in issue #4
+        Note over Phone: Native app login credentials use platform-protected storage.
+
+        alt Customer already has a provider wallet
+            User->>Phone: Enter wallet address or payment pointer
+        else Customer needs a provider account or wallet
+            Phone-->>User: Open provider-hosted account onboarding
+            User->>Provider: Complete provider signup, wallet creation and funding
+            User->>Phone: Return with the provider wallet address
+            Note over Phone,Provider: Account opening needs provider support or an external provider flow.<br/>A public API for automatic consumer account creation has not been established here.
+        end
+
+        Phone->>API: Begin linking a wallet for the authenticated app user
+        API->>API: Validate the wallet URL and block internal/private-network fetches
+        API->>SDK: Get public wallet metadata
+        SDK->>Provider: GET wallet address
+        Provider-->>SDK: Wallet ID, asset, scale, auth server and resource server
+        SDK-->>API: Validated public metadata
+        API->>DB: Save short-lived, one-use wallet-link interaction state
+        API->>SDK: Start an interactive subject-verification grant
+        SDK->>Provider: Signed ownership-verification request
+        Provider-->>SDK: Provider interaction URL and continuation details
+        SDK-->>API: Provider interaction and continuation details
+        API-->>Phone: Open the provider interaction in a browser
+        User->>Provider: Authenticate and approve wallet verification
+        Provider-->>API: Browser redirect callback
+        API->>API: Verify correlation, interaction hash, expiry and one-use state
+        API->>SDK: Continue the grant
+        SDK->>Provider: Signed continuation request
+        Provider-->>SDK: Verified subject
+        SDK-->>API: Verified subject result
+        API->>API: Require the verified subject to match the claimed wallet
+        API->>DB: Save VERIFIED wallet link under this app user
+        API-->>Phone: Show connected wallet and its asset
+        Note over Phone,DB: Repeat linking for additional wallets and choose sending/receiving defaults.<br/>Wallet links belong to users, not global sender/receiver environment variables.
+        Note over API,Provider: Public metadata is discovery. Ownership verification establishes the link.<br/>Permission to spend is a separate provider-approved grant.
+    end
+
+    rect rgb(230, 250, 235)
+        Note over User,Provider: PRODUCTION TARGET - online provider payment
+        Phone->>API: Authenticated payment request with amount, merchant ID and idempotency key
+        API->>DB: Resolve verified payer and merchant wallet links
+        API->>API: Enforce user ownership, recipient authorization and amount/asset rules
+        API->>DB: Atomically reserve the payment attempt, then commit
+        Note over API,DB: Do not hold a database transaction open during external provider calls.
+
+        API->>SDK: Obtain incoming-payment grant and create recipient incoming payment
+        SDK->>Provider: Signed incoming-payment grant and resource requests
+        Provider-->>SDK: Incoming payment ID
+        SDK-->>API: Incoming payment reference
+        API->>SDK: Obtain quote grant and create a fresh quote from the payer
+        SDK->>Provider: Quote the incoming payment
+        Provider-->>SDK: Quote ID, debit amount, receive amount and assets/scales
+        SDK-->>API: Provider quote including conversion and fees
+        Note over API,Provider: Amounts use integer minor-unit strings with explicit asset/scale.<br/>Check debit limits against the quoted debit amount, including fees and FX.
+
+        alt A suitable prior outgoing-payment grant is valid and within budget
+            API->>DB: Load and decrypt the grant bound to this payer and wallet
+        else Fresh payer consent is required
+            API->>SDK: Request a bounded outgoing-payment grant
+            SDK->>Provider: Signed grant request for the intended payer wallet
+            Provider-->>SDK: Provider consent URL and continuation details
+            SDK-->>API: Provider consent and continuation details
+            API-->>Phone: Redirect the payer to the provider
+            User->>Provider: Approve the displayed spending limits
+            Provider-->>API: Browser redirect callback
+            API->>API: Verify callback correlation, interaction hash and one-use state
+            API->>SDK: Continue the approved grant
+            SDK->>Provider: Signed continuation request
+            Provider-->>SDK: Finalized provider grant and access token
+            SDK-->>API: Grant token, scope and limits
+            API->>DB: Encrypt any persisted token and save payer-bound grant metadata
+        end
+
+        API->>API: Recheck quote, grant scope, expiry and remaining debit budget
+        API->>SDK: Create outgoing payment with payer wallet, fresh quote and payer grant token
+        SDK->>Provider: Signed outgoing-payment request
+        Provider-->>SDK: Provider payment ID and current state
+        SDK-->>API: Provider resource references
+        API->>DB: Save real resource IDs and PROCESSING state
+        API->>SDK: Retrieve and reconcile authoritative payment outcome
+        SDK->>Provider: Read payment resources by their provider IDs
+        Provider-->>SDK: Current authoritative outcome
+        SDK-->>API: Provider outcome
+
+        alt Provider confirms successful completion
+            API->>DB: Save SUCCEEDED and actual payment amounts
+            API-->>Phone: Confirmed payment
+            API-->>Merchant: Confirmed receipt
+        else Provider confirms failure
+            API->>DB: Save FAILED with a safe failure reason
+            API-->>Phone: Payment failed
+            API-->>Merchant: Payment failed
+        else Pending, timeout or ambiguous result
+            API->>DB: Preserve the attempt claim and save PROCESSING or UNKNOWN
+            API-->>Phone: Pending / reconciling
+            API-->>Merchant: Pending / reconciling
+            Note over API,Provider: Reconcile the existing attempt before any new debit.<br/>API acceptance or a local database row is not provider-confirmed settlement.
+        end
+        Note over DB,Provider: The account provider holds and moves funds.<br/>Supabase stores app records and provider references, not an invented funds ledger.
+    end
+
+    rect rgb(255, 245, 220)
+        Note over User,Provider: CONDITIONAL PRODUCTION TARGET - payer offline, merchant online<br/>Enable only after proving provider support for reusable, budget-limited grants.<br/>Required proof: two fresh payments using one approved grant without a second consent prompt.
+        Note over Phone,Provider: Initial wallet linking, device enrollment and provider spending consent happen online.<br/>A device signature is separate from the backend developer key and provider permission.
+        Phone->>Phone: Generate a per-device Ed25519 key pair and securely retain the private key
+        Phone->>API: Authenticated enrollment of the public key and device ID
+        API->>DB: Save public verification key, owner and revocation state
+        Note over API,DB: A usable prior payer-approved grant must already be available.<br/>Token expiry, revocation and aggregate provider spending limits remain authoritative.
+
+        User->>Phone: Confirm a spending ceiling and Quick or Errand lifetime
+        Phone->>Phone: Sign a versioned instruction with fresh nonce, payer/device, asset,<br/>ceiling, issued-at, expiry, mode and optional merchant restriction
+        Note over Phone: Quick: at most 30 seconds.<br/>Errand: user-selected duration, at most 25 minutes.<br/>The private signing key stays on the device.
+        Phone-->>Merchant: Present the signed QR or a printed QR while the payer is offline
+        Merchant->>API: Authenticated merchant submits the QR, actual charge and recipient identity
+        API->>DB: Resolve the enrolled public key and verified merchant wallet
+        API->>API: Verify signature, device status, mode/lifetime, clock bounds,<br/>asset/amount constraints and merchant restriction
+        API->>DB: Atomically claim the unique device/nonce and payment attempt, then commit
+
+        alt Prior provider grant is usable for this payer and new payment
+            API->>SDK: Create fresh incoming payment and quote, enforce quoted debit ceilings,<br/>then execute with the payer's existing approved grant
+            SDK->>Provider: Signed provider requests within the remaining grant budget
+            Provider-->>SDK: Payment resource references and outcome
+            SDK-->>API: Provider results
+            Note over API,Provider: Use the same confirmation and reconciliation path as the online flow.<br/>Exactly one successful redemption consumes the whole credential.<br/>Only the actual permitted charge is paid, not automatically the whole ceiling.
+            API-->>Merchant: Confirmed, failed or pending according to provider outcome
+        else Provider requires renewed payer interaction or usable permission is absent
+            API-->>Merchant: Payer must reconnect and authorize before settlement
+        end
+        Note over Phone,Provider: A QR does not reserve funds or guarantee sufficient balance.<br/>If both devices are offline, any queued action is pending only.<br/>If reusable grants are unsupported, keep the online payment flow as the MVP fallback.
+    end
+
+    rect rgb(255, 235, 235)
+        Note over CLI,Provider: CURRENT DEV - implemented SDK bootstrap and public wallet lookup only
+        CLI->>CLI: Read one/two command arguments or temporary SENDING/RECEIVING environment values
+        CLI->>SDK: lookupWalletAddresses - normalize pointers and create a public client
+        SDK->>Provider: Public wallet-address GET requests with SDK response validation
+        Provider-->>SDK: Public wallet metadata
+        SDK-->>CLI: Wallet IDs, assets/scales and provider server URLs
+        CLI->>CLI: Print mode = temporary-integration-lookup and metadata
+
+        Note over API,SDK: createOpenPaymentsClient is a factory that returns a new signing-capable client.<br/>It loads CLIENT_WALLET_ADDRESS_URL, KEY_ID and PRIVATE_KEY_PATH.<br/>The current public lookup command does not use the signing key.
+        Note over CLI,SDK: DEV identity: a demo payer Test Wallet supplies the integration identity/key.<br/>Local .env and PEM files are plaintext and excluded from Git.<br/>Production developer keys belong in backend secret storage, not Flutter.
+        Note over API,DB: CURRENT: BCrypt passwords, PostgreSQL cookie sessions and verified DB TLS.<br/>JWT migration is tracked in issue #4. DB connection split is deferred in issue #3.
+        Note over Phone,DB: NOT IMPLEMENTED: Flutter signup/wallet linking and its server URL/SSRF controls,<br/>verified user wallet records, provider grant persistence/encryption,<br/>payment execution/reconciliation, phone key enrollment and signed offline redemption.
+        Note over CLI,Provider: Current provider: Interledger Test Wallet with simulated funds and manual funding.<br/>Wallet metadata, matching registered developer keys and SDK initialization are verified.<br/>The single-transfer proof and reusable-grant proof are still pending.
+    end
