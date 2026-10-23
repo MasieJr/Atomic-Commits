@@ -4,7 +4,7 @@ These box-and-arrow flowcharts describe the intended customer/merchant journey. 
 
 **Status:** the production flows below are design targets. Local Test Wallet commands demonstrated a confirmed transfer and bounded grant reuse. App-facing payment endpoints and client onboarding remain pending.
 
-Start with [backend architecture/API exposure](backend-payments.md) for backend scope. The [proofs/theory](payment-proofs.md) and [reproduction guide](payment-reproduction.md) are separate documents; the agent handoff is kept locally.
+Start with [backend architecture/API exposure](backend-payments.md) for backend scope; that document also holds the proposed API/data/token contracts and open product decisions. The [proofs/theory](payment-proofs.md) covers the experimental evidence and the [reproduction guide](payment-reproduction.md) shows how to run it.
 
 ## 1. Production target: signup and wallet setup
 
@@ -72,6 +72,24 @@ The provider holds and moves funds. Supabase stores app records and provider ref
 - API acceptance and a local database record are intermediate states. A paid state requires provider-confirmed completion.
 - For an uncertain result, reconcile the existing attempt before initiating another debit. Provider-side idempotency support still needs to be established independently of app-side duplicate control.
 
+### Merchant receiving journey (design target)
+
+The same online payment is viewed from the merchant side. The backend resolves the recipient from an authorized merchant record; client-supplied IDs never grant authority by themselves.
+
+```mermaid
+flowchart LR
+    MerchantApp["Merchant app, authenticated"] --> Submit["Submit or read an authorized<br/>payment/redeem request"]
+    Submit --> Resolve["Backend resolves the merchant's<br/>verified receiving wallet link"]
+    Resolve --> Settlement["Backend quotes and executes the payment<br/>against the payer's approved provider grant"]
+    Settlement --> Outcome{"Provider outcome"}
+    Outcome -->|"Confirmed"| Receipt["Show provider-confirmed receipt<br/>and actual amounts"]
+    Outcome -->|"Failed"| Failure["Show payment failure<br/>with any safe partial information"]
+    Outcome -->|"Pending or uncertain"| Hold["Show pending and reconcile the existing attempt<br/>Never re-initiate a debit from the merchant side"]
+    Hold -->|"Reconciled"| Outcome
+```
+
+Merchant apps receive sanitized status DTOs, never provider grant tokens or developer keys. During offline redemption the merchant app additionally submits a signed payer instruction; the backend performs verification, nonce claiming and settlement (next section).
+
 ## 3. Conditional production target: payer offline, merchant online
 
 This flow depends on actual provider support for reusable, budget-limited outgoing-payment grants. The local proof has passed for the configured Test Wallet pair; token renewal, additional merchant wallets and device-signed redemption still require their own implementation and verification.
@@ -101,6 +119,15 @@ flowchart TD
 - Creating a QR does not reserve funds or guarantee a sufficient provider balance. If both devices are offline, a queued action remains pending.
 - The [local provider proofs](payment-proofs.md) passed for the tested wallet pair. App-level wallet ownership, device enrollment, single-use redemption and lifecycle/recovery work still have to be implemented.
 
+### Quick and Errand at a glance
+
+| Mode | Maximum credential duration | Private key holder | Redemption rule | Open constraint |
+| --- | --- | --- | --- | --- |
+| Quick | 30 seconds | Phone (device secure storage) | Single use; the first confirmed redemption consumes the entire credential | Must fall inside currently usable provider permission |
+| Errand | User-selected, up to 25 minutes | Phone (device secure storage) | Single use; same consumption rule | The 25-minute target is not yet guaranteed: the observed provider token lasted 600 seconds and renewal is unverified (see the [proofs](payment-proofs.md) and the [token lifecycle](backend-payments.md#9-token-lifecycle-and-renewal-not-implemented)) |
+
+Both modes depend on the reusable bounded grant proven in Proof B; neither requires the payer's app JWT to reach the backend at redemption.
+
 ## 4. Current development implementation
 
 ```mermaid
@@ -109,26 +136,17 @@ flowchart TD
         Command["npm run wallet:lookup"] --> Inputs["One/two command arguments<br/>or temporary sender/receiver environment values"]
         Inputs --> Normalize["Normalize payment pointers to HTTPS<br/>Validate the address format"]
         Normalize --> PublicClient["Create an unauthenticated SDK client"]
-        PublicClient --> Fetch["Fetch public wallet metadata<br/>SDK validates the provider response"]
-        Fetch --> Output["Print metadata with<br/>mode = temporary-integration-lookup"]
+        PublicClient --> Output["Fetch and print validated public wallet metadata"]
     end
     subgraph Signing["IMPLEMENTED - developer-client initialization"]
-        Config["Server-only client wallet address,<br/>key ID and private-key file path"] --> Factory["createOpenPaymentsClient factory"]
-        Factory --> Client["New signing-capable SDK client instance<br/>Created on each factory call"]
+        Config["Server-only client wallet address,<br/>key ID and private-key file path"] --> Factory["createOpenPaymentsClient factory<br/>A new signing-capable client per call"]
     end
     subgraph Proofs["IMPLEMENTED - local Test Wallet payment proofs"]
-        ProofCommand["payment:proof-a, payment:proof-b or payment:proofs"] --> Grants["Signing client and required resource grants"]
-        Grants --> Consent["A: quoted payment approval<br/>B: prior bounded-budget approval<br/>Verified one-use localhost callback"]
-        Consent --> Payments["A: one confirmed transfer<br/>B: fresh incoming/quote per payment,<br/>two transfers with the same grant/token"]
-        Payments --> Confirm["Check outgoing and incoming provider resources<br/>Read the provider's spent counter"]
-        Confirm --> Mode{"B included in this run?"}
-        Mode -->|"Yes"| Budget["Provider rejects the over-budget request<br/>Spent counter remains unchanged"]
-        Budget --> Evidence["Write redacted local receipts<br/>Cancel temporary proof grants"]
-        Mode -->|"No"| Evidence
+        ProofCommand["payment:proof-a, payment:proof-b or payment:proofs"] --> Result["Grant consent, one confirmed transfer (A),<br/>two transfers under one budgeted grant (B)<br/>and the over-budget rejection check"]
     end
 ```
 
-The public lookup command uses the unauthenticated client. It does not call the signing-client factory or use the private key. Both public wallet metadata lookup and initialization with the matched registered developer key have been verified.
+The public lookup command uses the unauthenticated client. It does not call the signing-client factory or use the private key. Both public wallet metadata lookup and initialization with the matched registered developer key have been verified. The step-by-step A/B grant, payment and budget flows live in the [proofs document](payment-proofs.md); the commands, consent behavior and evidence files are in the [reproduction guide](payment-reproduction.md).
 
 | Area | Production target | What we have in development |
 | --- | --- | --- |
@@ -158,9 +176,8 @@ The temporary sender/receiver settings belong to the manual integration workflow
 
 ## 5. Backend implementation and proof documents
 
-- [Backend architecture and API boundary](backend-payments.md) - existing routes, proposed payment resources, ownership and an additional standalone `.mmd` flowchart.
+- [Backend architecture and API boundary](backend-payments.md) - existing routes, provider internals, the proposed API/data-model/token contracts and open decisions.
 - [Proofs and theory](payment-proofs.md) - the A/B hypotheses, resource/grant model, measured results, encoding/error adaptations and implications for the vision.
-- Local `backend-agent-handoff.md` (not versioned) - method map, draft contracts and questions to ask before extending the product.
 - [Reproduction guide](payment-reproduction.md) - keys/tokens inventory, local `.env` placeholders, funding, exact commands, consent, evidence and interrupted-run recovery.
 
 The proof details and reproduction instructions live in those dedicated documents so this page remains a product-flow overview.

@@ -2,8 +2,7 @@
 
 This document records what the backend experiments demonstrate, why they matter, and their limits. Here, a **proof** means an empirical integration experiment against Interledger Test Wallet, using simulated funds. It is not a formal proof or a production-readiness claim.
 
-- [Backend architecture and API boundary](backend-payments.md)
-- Local agent handoff: `backend-agent-handoff.md` (not versioned)
+- [Backend architecture, API contract and open decisions](backend-payments.md)
 - [Reproduction guide, including keys and tokens](payment-reproduction.md)
 - [Product payment flowcharts](payment-flows.md)
 
@@ -215,7 +214,7 @@ One B run completed its two payments but the original checker incorrectly classi
 
 The provider permission primitive needed for an unattended backend payment is demonstrably available in this specific Test Wallet setup. This supports continuing backend wallet-linking, grant management and payment API work.
 
-It does not eliminate the need for customer setup, provider funding, device enrollment, a trustworthy merchant identity or an online backend/provider at redemption. The highest-priority product question is how a 25-minute credential remains redeemable when the observed provider token lasts 10 minutes. Further vision questions are kept in the local agent handoff; the [backend overview](backend-payments.md) covers the public architecture and scope.
+It does not eliminate the need for customer setup, provider funding, device enrollment, a trustworthy merchant identity or an online backend/provider at redemption. The highest-priority product question is how a 25-minute credential remains redeemable when the observed provider token lasts 10 minutes. The open decisions that follow from this limit are collected in the [backend architecture document](backend-payments.md#11-open-decisions-requiring-productprovider-answers).
 
 ## References
 

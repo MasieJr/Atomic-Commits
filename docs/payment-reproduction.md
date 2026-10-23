@@ -6,7 +6,7 @@ All values below are placeholders or public example amounts. Real private keys, 
 
 - [Proofs/theory and observed results](payment-proofs.md)
 - [Current API and backend architecture](backend-payments.md)
-- Local agent handoff: `backend-agent-handoff.md` (not versioned)
+- [Product payment flowcharts](payment-flows.md)
 
 ## 1. Prerequisites and source state
 
