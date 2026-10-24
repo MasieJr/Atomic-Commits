@@ -9,15 +9,14 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 
 const { app, authConfigured, close } = createApp({
   databaseUrl: process.env.DATABASE_URL,
-  sessionSecret: process.env.SESSION_SECRET,
-  production: process.env.NODE_ENV === 'production',
+  jwtSecret: process.env.JWT_SECRET,
 });
 
 if (require.main === module) {
   const server = app.listen(port, () => {
     console.log(`Backend listening on port ${port}`);
     if (!authConfigured) {
-      console.log('Auth is unavailable: set DATABASE_URL and a SESSION_SECRET of at least 32 characters.');
+      console.log('Auth is unavailable: set DATABASE_URL and a JWT_SECRET of at least 32 characters.');
     }
   });
 

@@ -6,6 +6,7 @@ import bcrypt from 'bcrypt';
 import { Pool } from 'pg';
 
 import { createApp } from '../src/app';
+import { createAccessTokenService } from '../src/services/tokens';
 
 async function createFixture(t: TestContext) {
   const user = { id: 1, name: 'Test User', email: 'user@example.test' };
@@ -20,10 +21,12 @@ async function createFixture(t: TestContext) {
     return { rows: [] };
   });
 
+  const jwtSecret = 'auth-login-test-secret-at-least-32-characters';
   const { app, close } = createApp({
     databaseUrl: 'postgresql://test:test@127.0.0.1:1/test',
-    sessionSecret: 'auth-login-test-secret-at-least-32-characters',
+    jwtSecret,
   });
+  const tokens = createAccessTokenService(jwtSecret);
   const server = app.listen(0, '127.0.0.1');
   t.after(async () => {
     await new Promise<void>((resolve, reject) => {
@@ -50,7 +53,7 @@ async function createFixture(t: TestContext) {
     };
   }
 
-  return { login, compare, hash, query, user, password, passwordHash };
+  return { login, compare, hash, query, user, password, passwordHash, tokens };
 }
 
 test('unknown email and wrong password both perform bcrypt work and return the same failure', async (t) => {
@@ -64,7 +67,6 @@ test('unknown email and wrong password both perform bcrypt work and return the s
   assert.deepEqual(wrongPassword.body, { error: 'Invalid email or password' });
   assert.deepEqual(unknownEmail.body, wrongPassword.body);
   assert.equal(wrongPassword.headers.get('set-cookie'), null);
-  assert.equal(unknownEmail.headers.get('set-cookie'), null);
   assert.equal(compare.mock.callCount(), 2);
   assert.equal(compare.mock.calls[0].arguments[1], passwordHash);
 
@@ -85,19 +87,28 @@ test('a successful dummy comparison cannot authenticate an unknown email', async
 
   assert.equal(response.status, 401);
   assert.deepEqual(response.body, { error: 'Invalid email or password' });
-  assert.equal(response.headers.get('set-cookie'), null);
   assert.equal(compare.mock.callCount(), 1);
   assert.equal(query.mock.callCount(), 1);
 });
 
-test('valid credentials still use the stored hash and create a login session', async (t) => {
-  const { login, compare, hash, query, user, password, passwordHash } = await createFixture(t);
+test('valid credentials still use the stored hash and return a bearer token', async (t) => {
+  const { login, compare, hash, query, user, password, passwordHash, tokens } =
+    await createFixture(t);
 
   const response = await login(`  ${user.email.toUpperCase()}  `, password);
 
   assert.equal(response.status, 200);
-  assert.deepEqual(response.body, { message: 'Login successful', user });
-  assert.match(response.headers.get('set-cookie') ?? '', /^atomic\.sid=/);
+  const token = (response.body as { token?: unknown }).token;
+  assert.equal(typeof token, 'string');
+  /* header.payload.signature shape of an HS256 token signed with our secret */
+  assert.match(token as string, /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/);
+  assert.equal(response.headers.get('set-cookie'), null);
+  assert.equal((response.body as { message?: unknown }).message, 'Login successful');
+  assert.deepEqual(
+    (response.body as { user?: unknown }).user,
+    { id: user.id, name: user.name, email: user.email } as unknown,
+  );
+  assert.equal(tokens.verify((response.body as { token: string }).token), user.id);
   assert.equal(compare.mock.callCount(), 1);
   assert.equal(compare.mock.calls[0].arguments[1], passwordHash);
   assert.deepEqual(query.mock.calls[0].arguments[1], [user.email]);
