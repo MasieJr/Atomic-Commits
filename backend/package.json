@@ -9,12 +9,17 @@
     "dev": "tsx watch server.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "db:migrate": "npm run build && node dist/migrate.js"
+    "db:migrate": "npm run build && node dist/migrate.js",
+    "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js",
+    "payment:proof-a": "npm run build && node dist/src/commands/payment-proof.js a",
+    "payment:proof-b": "npm run build && node dist/src/commands/payment-proof.js b",
+    "payment:proofs": "npm run build && node dist/src/commands/payment-proof.js both"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@interledger/open-payments": "^7.4.0",
     "bcrypt": "^6.0.0",
     "dotenv": "^16.6.1",
     "express": "^5.1.0",
