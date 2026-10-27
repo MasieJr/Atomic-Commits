@@ -1,17 +1,36 @@
-# atomic_commits
+# Atomic Commits mobile
 
-A new Flutter project.
+Flutter frontend for Atomic Commits. The app starts on the illustrated welcome
+screen.
 
-## Getting Started
+## Run the browser preview
 
-This project is a starting point for a Flutter application.
+From this `mobile` directory:
 
-A few resources to get you started if this is your first Flutter project:
+```sh
+flutter pub get
+flutter run -d edge
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+This runs the Flutter app in Edge using the web entry point in `web/index.html`.
+Android Studio, an Android SDK, and an emulator are not required for this preview.
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+If Flutter is installed under `Development/SDKs` but is not on your Windows PATH,
+use PowerShell:
+
+```powershell
+$flutter = Join-Path $env:USERPROFILE 'Development\SDKs\flutter\bin\flutter.bat'
+& $flutter run -d edge
+```
+
+In Edge, open DevTools with **F12**, then press **Ctrl+Shift+M** to enable device
+emulation and choose a phone size. Keep the Flutter terminal open; press **r** to
+hot reload, **R** to restart, or **q** to stop.
+
+## Checks
+
+```sh
+flutter test
+flutter analyze
+flutter build web
+```
