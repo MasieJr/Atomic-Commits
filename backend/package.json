@@ -13,7 +13,8 @@
     "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js",
     "payment:proof-a": "npm run build && node dist/src/commands/payment-proof.js a",
     "payment:proof-b": "npm run build && node dist/src/commands/payment-proof.js b",
-    "payment:proofs": "npm run build && node dist/src/commands/payment-proof.js both"
+    "payment:proofs": "npm run build && node dist/src/commands/payment-proof.js both",
+    "payment:proof-c": "npm run build && node dist/src/commands/payment-proof-c.js"
   },
   "engines": {
     "node": ">=20"
