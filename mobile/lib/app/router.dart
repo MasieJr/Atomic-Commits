@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../features/auth/screens/signup_screen.dart';
 import '../features/payer/screens/payer_home_screen.dart';
 import '../features/payer/screens/show_qr_screen.dart';
 import '../features/merchant/screens/merchant_home_screen.dart';
@@ -10,6 +11,7 @@ import '../features/welcome/screens/welcome_screen.dart';
 
 abstract final class AppRoutes {
   static const welcome = '/';
+  static const signup = '/signup';
 
   static const payer = '/payer';
   static const payerQr = '/payer/qr';
@@ -26,6 +28,11 @@ final appRouter = GoRouter(
       path: AppRoutes.welcome,
       name: 'welcome',
       builder: (context, state) => const WelcomeScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.signup,
+      name: 'signup',
+      builder: (context, state) => const SignupScreen(),
     ),
 
     /**

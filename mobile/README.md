@@ -1,7 +1,8 @@
 # Atomic Commits mobile
 
 Flutter frontend for Atomic Commits. The app starts on the illustrated welcome
-screen.
+screen. Choose **Sign up** to open the registration form, with local validation
+and password visibility controls. Account creation is currently a UI preview.
 
 ## Run the browser preview
 

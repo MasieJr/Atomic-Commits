@@ -2,6 +2,9 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../../../app/router.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -80,7 +83,7 @@ class WelcomeScreen extends StatelessWidget {
                                   height: (artworkHeight * 0.035).clamp(16, 32),
                                 ),
                                 Text(
-                                  'Commit. Claim. Complete.',
+                                  'Join the colony.',
                                   textAlign: TextAlign.center,
                                   style: TextStyle(
                                     color: _ink,
@@ -94,7 +97,7 @@ class WelcomeScreen extends StatelessWidget {
                                 const Spacer(),
                                 ElevatedButton(
                                   onPressed: () =>
-                                      _showNextStep(context, 'Sign up'),
+                                      context.push(AppRoutes.signup),
                                   style: ElevatedButton.styleFrom(
                                     backgroundColor: _cobalt,
                                     foregroundColor: Colors.white,

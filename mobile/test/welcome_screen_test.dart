@@ -79,7 +79,7 @@ void main() {
 
         expect(tester.takeException(), isNull);
         final brand = tester.getRect(find.text('commits'));
-        final tagline = tester.getRect(find.text('Commit. Claim. Complete.'));
+        final tagline = tester.getRect(find.text('Join the colony.'));
         expect(brand.bottom, lessThan(tagline.top));
         expect(
           tagline.bottom,
@@ -115,17 +115,15 @@ void main() {
     );
   }
 
-  for (final label in ['Sign up', 'Log in']) {
-    testWidgets('$label gives feedback while its screen is pending', (
-      tester,
-    ) async {
-      await _pumpWelcome(tester);
-      await tester.tap(_action(label));
-      await tester.pumpAndSettle();
+  testWidgets('Log in gives feedback while its screen is pending', (
+    tester,
+  ) async {
+    await _pumpWelcome(tester);
+    await tester.tap(_action('Log in'));
+    await tester.pumpAndSettle();
 
-      expect(find.text('$label is coming soon.'), findsOneWidget);
-    });
-  }
+    expect(find.text('Log in is coming soon.'), findsOneWidget);
+  });
 
   testWidgets('welcome artwork is included in the app bundle', (tester) async {
     final data = await rootBundle.load('assets/images/welcome-background.png');
