@@ -6,8 +6,11 @@ import '../features/payer/screens/show_qr_screen.dart';
 import '../features/merchant/screens/merchant_home_screen.dart';
 import '../features/merchant/screens/scan_qr_screen.dart';
 import '../features/merchant/screens/enter_code_screen.dart';
+import '../features/welcome/screens/welcome_screen.dart';
 
 abstract final class AppRoutes {
+  static const welcome = '/';
+
   static const payer = '/payer';
   static const payerQr = '/payer/qr';
 
@@ -17,9 +20,14 @@ abstract final class AppRoutes {
 }
 
 final appRouter = GoRouter(
-  // initialLocation: AppRoutes.payer,
-  initialLocation: AppRoutes.merchant,
+  initialLocation: AppRoutes.welcome,
   routes: [
+    GoRoute(
+      path: AppRoutes.welcome,
+      name: 'welcome',
+      builder: (context, state) => const WelcomeScreen(),
+    ),
+
     /**
      * Payer screens
      * /payer     ->  payer homePage
