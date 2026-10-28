@@ -3,7 +3,7 @@
 This document records what Proof C is designed to demonstrate, how it is run safely, and what it does not claim. A **proof** here means an empirical integration experiment against Interledger Test Wallet with simulated funds. It is not a production-readiness claim.
 
 Companion reading: the theory and the historical evidence for Proofs A/B live in
-[payment-proofs.md](payment-proofs.md). Proof C does not change that document: it starts as `NOT_RUN`, and nothing in it may be presented as a live-passed result until an owner-approved live run has actually happened.
+[payment-proofs.md](payment-proofs.md). The dry command reports `NOT_RUN`; live results are reported separately and do not imply a passing result unless the full proof succeeds.
 
 ## 1. Hypothesis
 
@@ -27,7 +27,11 @@ The real experiment requires an explicit `--live` flag:
 npm run payment:proof-c -- --live
 ```
 
-`--live` performs network/credential/consent activity and **must only be run with explicit owner approval**: the owner or an agent/operator the owner has approved for that specific run may execute it. No such approval exists yet, so any `--live` run today is unauthorized. The consent click at the wallet UI is always the owner's own decision (or their approved operator acting per instruction), and the wallet must belong to whoever authorizes the run. Proof runs must also stay in development mode: the command refuses to start when `NODE_ENV=production`.
+`--live` performs network/credential/consent activity and **must only be run with explicit owner approval for that run**: the owner or an agent/operator the owner has approved may execute it. Approval of one run does not authorize a retry. The consent click at the wallet UI is always the owner's own decision (or their approved operator acting per instruction), and the wallet must belong to whoever authorizes the run. Proof runs must also stay in development mode: the command refuses to start when `NODE_ENV=production`.
+
+### Observed live run — 2026-10-28 UTC
+
+One owner-approved Test Wallet run completed as **INCONCLUSIVE**. It recorded one payer interaction, but the initial provider spent counter could not be verified (`UNVERIFIABLE_COUNTER`), so it stopped before any debit: **zero transfers and zero rotations**. Cleanup reported no warnings and no authorities retained for unresolved payments. The outer run report is `FAILED` because the proof did not pass; this is not evidence of a failed payment. The report did not capture whether the counter was missing or its read failed, so that underlying cause remains unknown. Neither the 25-minute capability nor counter continuity has been demonstrated by this run.
 
 ## 3. Configuration (explicit; no defaults apply to Proof C)
 
@@ -76,6 +80,8 @@ At most three transfers happen. A successful rotation alone never shortens or re
 `INCONCLUSIVE` means the outcome stayed unknown: unknown transfer states, an ambiguous rotation, lifecycle verification failures (authority/scope/counter), a missing or unconfirmed counter, schedule-margin failures, or cleanup problems. Evidence stays as observed; nothing is claimed.
 
 `FAILED` vs `INCONCLUSIVE` is visible in the redacted evidence itself, via these observational fields — each turns true only after an actual observation: `originalAccessTokenLifetimeSeconds` and `originalDeadlineAt` (from the approved token's conservative deadline), `paymentAfterOriginalExpiryConfirmed`, `paymentAfterMinute25Confirmed`, `providerSpentCounterConsistent`, `grantRestrictionsPreserved`, `payerInteractions` (a documented alias of `interactiveApprovals`), plus `lifecycleFailures` entries carrying only the safe lifecycle category, its classification and the SDK's whitelisted status/code fields — never a raw provider description. Any counter reading below an earlier reading counts as a reset and fails the run, even if a later reading would recover to the expected total.
+
+For future runs, `rotationCounterObservations` retains each actual validated before/after rotation reading with its attempt number, timestamp and sanitized amount; an unobserved reading is omitted rather than inferred. `lifecycleFailures.counterReason` distinguishes a missing, malformed, mismatched or excessive counter, a failed read, and a changed rotation counter without retaining raw provider text. These fields do not retroactively reveal the cause of the 2026-10-28 run. Report-finalization and lock-release failures are printed as separate constant, sanitized errors.
 
 The bounded counter polling handles valid delayed counters: it reads repeatedly within `counterSettleMs` and stops as soon as the counter equals the confirmed cumulative debit. A counter read that errors or is aborted (operators pressing Ctrl+C included) intentionally stops the run as `INCONCLUSIVE` — a deliberately conservative fail-closed behavior: no read is retried and no debit is re-attempted, and an `INCONCLUSIVE` result explicitly does not disprove the provider capability; it says the evidence cannot be completed. Nothing in this path triggers a new consent, a re-authorization request, or a submission retry.
 
