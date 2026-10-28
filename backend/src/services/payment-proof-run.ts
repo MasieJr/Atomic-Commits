@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 
 import { OpenPaymentsClientError, type Quote } from "@interledger/open-payments";
 
-export type ProofMode = "a" | "b" | "both" | "c";
+export type ProofMode = "a" | "b" | "both" | "token-probe" | "c";
 export type Amount = Quote["debitAmount"];
 export type PaymentState = "PREPARED" | "SUBMITTING" | "PROCESSING" | "SUCCEEDED" | "FAILED" | "UNKNOWN" | "REJECTED";
 
