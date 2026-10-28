@@ -15,6 +15,12 @@ import {
   type ProofCEvidence,
 } from "../services/payment-proof-c";
 import { PaymentProofs } from "../services/payment-proof";
+import {
+  finalizeProofCRun,
+  PROOF_C_CLOSE_ERROR,
+  PROOF_C_FINISH_ERROR,
+  PROOF_C_SIGNAL_CLEANUP_ERROR,
+} from "../services/payment-proof-c-finalization";
 import { ProofRun, readProofConfig, type ProofMode } from "../services/payment-proof-run";
 
 // locally-created, constant-text usage/config errors are the ONLY messages allowed
@@ -139,18 +145,19 @@ async function liveProofC(): Promise<void> {
       failure ??= persistError instanceof Error ? persistError : new Error("Payment proof C could not persist its result.");
       process.exitCode = 1;
     }
-    try {
-      await run.finish(failure);
-    } finally {
+    const finalization = await finalizeProofCRun(run, failure, () => {
       process.removeListener("SIGINT", interrupt);
       process.removeListener("SIGTERM", interrupt);
-      // releasing this run's own lock is not deleting user state; receipts untouched
-      try {
-        await run.close();
-      } catch (closeError) {
-        failure ??= closeError instanceof Error ? closeError : new Error("Payment proof C could not release its run lock.");
-        process.exitCode = 1;
-      }
+    });
+    // Constant messages distinguish a completed experiment from a start-up error;
+    // raw persistence/close errors may contain secrets and must never be printed.
+    for (const message of [
+      ...(finalization.finishFailed ? [PROOF_C_FINISH_ERROR] : []),
+      ...(finalization.signalCleanupFailed ? [PROOF_C_SIGNAL_CLEANUP_ERROR] : []),
+      ...(finalization.closeFailed ? [PROOF_C_CLOSE_ERROR] : []),
+    ]) {
+      console.error(JSON.stringify({ event: "payment-proof-c-finalization-error", message }));
+      process.exitCode = 1;
     }
   }
 }
