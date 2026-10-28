@@ -8,9 +8,11 @@ import {
   type Quote,
   type WalletAddress,
 } from "@interledger/open-payments";
+import { createHash } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import { requestInteractiveGrant, testWalletUrl } from "./grant-interaction";
+import { validateReturnedOutgoingGrant } from "./outgoing-grant-validation";
 import { createOpenPaymentsClient, lookupWalletAddresses } from "./open-payments";
 import {
   formatAmount,
@@ -49,7 +51,7 @@ function definitiveRejection(error: unknown): boolean {
 
 // shared provider calls for A and B
 export class PaymentProofs {
-  private readonly grants: { continuation: Grant["continue"]; outgoing: boolean }[] = [];
+  private readonly grants: { continuation: Grant["continue"]; purpose: "incoming" | "quote" | "outgoing" }[] = [];
   private incomingGrant!: GrantWithAccessToken;
   private quoteGrant!: GrantWithAccessToken;
 
@@ -93,28 +95,42 @@ export class PaymentProofs {
     return { assetCode: this.sender.assetCode, assetScale: this.sender.assetScale, value: this.config.budgetMinor };
   }
 
-  private rememberGrant(grant: Grant, outgoing: boolean): void {
-    // keep tokens out of reports and retain what we need to cancel later
+  private rememberGrant(grant: Grant, purpose: "incoming" | "quote" | "outgoing"): void {
+    // keep tokens and management/continuation references out of reports, and retain what we need to cancel later
     this.run.rememberSecret(grant.continue.access_token.value);
-    if (grant.access_token) this.run.rememberSecret(grant.access_token.value);
-    this.grants.push({ continuation: grant.continue, outgoing });
+    if (grant.access_token) {
+      this.run.rememberSecret(grant.access_token.value);
+      this.run.rememberSecret(grant.access_token.manage);
+    }
+    // even the continuation URI is treated as redactable evidence; references stay opaque
+    this.run.rememberSecret(grant.continue.uri);
+    this.grants.push({ continuation: grant.continue, purpose });
   }
 
-  // these grants let us prepare/read resources; spending approval comes later
+  // these grants let us prepare/read resources; spending approval comes later.
+  // this stays non-interactive and re-invocable: refreshing resource tokens later is
+  // a maintenance read/write on existing wallets, never new outgoing payment consent.
   async initializeResourceGrants(): Promise<void> {
     const incoming = await this.run.step("request recipient incoming-payment grant", () => this.client.grant.request({
       url: this.receiver.authServer,
     }, { access_token: { access: [{ type: "incoming-payment", actions: ["create", "read", "complete"] }] } }));
-    this.rememberGrant(incoming, false);
+    this.rememberGrant(incoming, "incoming");
     if (!isFinalizedGrantWithAccessToken(incoming)) throw new Error("The recipient incoming-payment grant requires an unsupported extra interaction.");
     this.incomingGrant = incoming;
 
     const quote = await this.run.step("request payer quote grant", () => this.client.grant.request({
       url: this.sender.authServer,
     }, { access_token: { access: [{ type: "quote", actions: ["create", "read"] }] } }));
-    this.rememberGrant(quote, false);
+    this.rememberGrant(quote, "quote");
     if (!isFinalizedGrantWithAccessToken(quote)) throw new Error("The quote grant requires an unsupported extra interaction.");
     this.quoteGrant = quote;
+  }
+
+  // seam: re-run the non-interactive resource-grant maintenance over a long proof when the
+  // incoming/quote tokens lapse. this only refreshes existing resource wallets and never
+  // requests, renews or widens outgoing payment consent.
+  async refreshResourceGrants(): Promise<void> {
+    await this.initializeResourceGrants();
   }
 
   // give each payment its own incoming resource and quote
@@ -171,11 +187,21 @@ export class PaymentProofs {
     return quote;
   }
 
+  // single grant-request policy, shared by every path that obtains outgoing consent:
+  // only positive amounts in the payer wallet's asset, at or below the configured proof
+  // budget, are ever requested or installed
+  private requireValidGrantRequest(requestedBudget: Amount): void {
+    if (!sameAsset(requestedBudget, this.budgetAmount()) ||
+      minorValue(requestedBudget.value) === 0n ||
+      minorValue(requestedBudget.value) > minorValue(this.config.budgetMinor)) {
+      throw new Error("The requested grant exceeds the configured proof budget, is not positive, or uses a different asset.");
+    }
+  }
+
   // get payer approval for this cap; A binds a receiver, B leaves it open
   async authorize(label: string, requestedBudget: Amount, receiver?: string): Promise<ApprovedSpending> {
-    if (!sameAsset(requestedBudget, this.budgetAmount()) || minorValue(requestedBudget.value) > minorValue(this.config.budgetMinor)) {
-      throw new Error("The requested grant exceeds the configured proof budget or uses a different asset.");
-    }
+    // validate the request too, before asking the provider for anything
+    this.requireValidGrantRequest(requestedBudget);
     console.log(JSON.stringify({ event: "grant-request", label, budget: formatAmount(requestedBudget), receiverBinding: receiver ?? "none" }));
     const grant = await this.run.step(`${label}: request and continue outgoing grant`, () => requestInteractiveGrant(
       this.client,
@@ -204,32 +230,50 @@ export class PaymentProofs {
         },
       },
     ));
-    this.rememberGrant(grant, true);
-    // check what was actually granted, not just what we asked for
-    const access = grant.access_token.access.find((item) => item.type === "outgoing-payment" && item.identifier === this.sender.id);
-    if (!access || access.type !== "outgoing-payment" || !access.actions.includes("create") || !access.actions.includes("read")) {
-      throw new Error("The finalized grant does not authorize create/read for this payer.");
+    return this.installOutgoingGrant(label, grant, requestedBudget, receiver);
+  }
+
+  // public seam for proof harnesses that obtain the interactive grant themselves (e.g. a
+  // token-probe wrapper): the returned authority is validated fail-closed, registered for
+  // redaction and later cleanup before validation, tracked in the report and returned as
+  // verified spending.
+  async installOutgoingGrant(
+    label: string,
+    grant: GrantWithAccessToken,
+    requestedBudget: Amount,
+    receiver?: string,
+  ): Promise<ApprovedSpending> {
+    this.rememberGrant(grant, "outgoing");
+    // the public installer enforces the exact same request policy as authorize — including
+    // the configured proof budget ceiling — so the installed cap can never exceed it.
+    // this runs after rememberGrant so a rejected already-issued grant stays tracked and
+    // can still be cancelled during cleanup.
+    this.requireValidGrantRequest(requestedBudget);
+    // decide what was actually granted before anything uses it; this runs after rememberGrant
+    // so a rejected authority stays tracked and can still be cancelled during cleanup
+    const returned = validateReturnedOutgoingGrant(grant, {
+      payerId: this.sender.id,
+      requestedDebit: requestedBudget,
+      ...(receiver === undefined ? {} : { requestedReceiver: receiver }),
+    });
+    // expiry stays a wall-clock check in the wrapper so the helper remains deterministic
+    const deadline = Date.now() + returned.expiresInSeconds * 1000;
+    // only machine-representable deadlines pass; JS Dates cannot express beyond ~8.64e15 ms
+    if (!Number.isSafeInteger(deadline) || !Number.isFinite(new Date(deadline).getTime())) {
+      throw new Error("The advertised access-token expiry is too distant to represent a reliable payment deadline.");
     }
-    if (access.limits?.receiver && access.limits.receiver !== receiver) {
-      throw new Error("The provider added an incompatible receiver restriction to the grant.");
-    }
-    const returnedBudget = access.limits && "debitAmount" in access.limits ? access.limits.debitAmount : undefined;
-    if (returnedBudget && (!sameAsset(returnedBudget, requestedBudget) || minorValue(returnedBudget.value) > minorValue(requestedBudget.value))) {
-      throw new Error("The provider returned broader or incompatible debit limits.");
-    }
-    const expiresIn = grant.access_token.expires_in;
-    if (expiresIn !== undefined && expiresIn <= 0) throw new Error("The returned outgoing-payment token is already expired.");
     const spending: ApprovedSpending = {
       grant,
-      budget: returnedBudget ?? requestedBudget,
-      ...(expiresIn === undefined ? {} : { expiresAt: Date.now() + expiresIn * 1000 }),
+      budget: returned.budget,
+      expiresAt: deadline,
     };
     this.run.report.results[`${label}Grant`] = {
-      reference: grant.continue.uri,
+      // stable opaque identity; the raw continuation URI is a registered secret, never logged
+      referenceDigest: createHash("sha256").update(grant.continue.uri).digest("hex").slice(0, 16),
       interactiveApprovals: 1,
       requestedBudget,
-      returnedLimits: access.limits ?? null,
-      expiresInSeconds: expiresIn ?? null,
+      returnedLimits: returned.limits,
+      expiresInSeconds: returned.expiresInSeconds,
     };
     await this.run.save();
     return spending;
@@ -253,18 +297,56 @@ export class PaymentProofs {
   }
 
   // final budget/expiry checks before asking the provider to debit
-  async pay(payment: PreparedPayment, spending: ApprovedSpending, remainingBudget: Amount): Promise<PaymentEvidence> {
+  async pay(
+    payment: PreparedPayment,
+    spending: ApprovedSpending,
+    remainingBudget: Amount,
+    perPaymentDebitCeiling?: Amount,
+  ): Promise<PaymentEvidence> {
+    // synchronous guard before the first await: never re-prepare or re-quote onto an
+    // already-submitted payment
+    if (payment.evidence.state !== "PREPARED") {
+      throw new Error("This payment was already submitted; reconcile the recorded provider attempt instead of debiting again.");
+    }
     this.run.controller.signal.throwIfAborted();
+    // the caller-supplied remaining budget is never trusted wider than the immutable
+    // provider-accepted cap: it must be canonical, use the approved budget's asset/scale,
+    // and stay at or below it. this rejection happens with no provider interaction.
+    let remaining: bigint;
+    try {
+      remaining = minorValue(remainingBudget.value);
+    } catch {
+      throw new Error("The submitted remaining budget is not a canonical nonnegative integer amount.");
+    }
+    if (!sameAsset(remainingBudget, spending.budget) || remaining > minorValue(spending.budget.value)) {
+      throw new Error("The submitted remaining budget is not at or below the approved spending budget.");
+    }
     await this.refreshQuote(payment);
     this.requireLiveGrant(spending);
     if (!sameAsset(payment.quote.debitAmount, remainingBudget) ||
       minorValue(payment.quote.debitAmount.value) > minorValue(remainingBudget.value)) {
       throw new Error("The quoted debit exceeds the remaining approved proof budget.");
     }
+    // defense in depth: a quoted debit may also never exceed the immutable approved
+    // spending budget itself, whatever the submitted remaining amount claimed
+    if (!sameAsset(payment.quote.debitAmount, spending.budget) ||
+      minorValue(payment.quote.debitAmount.value) > minorValue(spending.budget.value)) {
+      throw new Error("The quoted debit exceeds the approved spending budget.");
+    }
+    // seam for an explicit per-payment payer debit ceiling, independent of the aggregate remaining budget
+    if (perPaymentDebitCeiling !== undefined &&
+      (!sameAsset(payment.quote.debitAmount, perPaymentDebitCeiling) ||
+        minorValue(payment.quote.debitAmount.value) > minorValue(perPaymentDebitCeiling.value))) {
+      throw new Error("The quoted payer debit exceeds the explicit per-payment ceiling.");
+    }
     return this.submitAndConfirm(payment, spending);
   }
 
   private async submitAndConfirm(payment: PreparedPayment, spending: ApprovedSpending): Promise<PaymentEvidence> {
+    // synchronous guard before the first await: a payment is submitted exactly once, from PREPARED only
+    if (payment.evidence.state !== "PREPARED") {
+      throw new Error("This payment was already submitted; reconcile the recorded provider attempt instead of debiting again.");
+    }
     // save before POST so an unclear response can't trigger a second debit
     payment.evidence.state = "SUBMITTING";
     await this.run.save();
@@ -313,7 +395,11 @@ export class PaymentProofs {
               await this.run.save();
               throw new ProofStepError(payment.evidence.label, new Error("The provider marked the outgoing payment failed. See the report for any partial amounts."));
             }
-            if (minorValue(outgoing.sentAmount.value) === minorValue(outgoing.debitAmount.value) && incoming.completed &&
+            // confirmed success needs an explicitly not-failed payment whose sent amount
+            // matches the quoted payer debit asset/scale; anything else stays unresolved
+            if (outgoing.sentAmount && outgoing.failed === false &&
+              minorValue(outgoing.sentAmount.value) === minorValue(outgoing.debitAmount.value) &&
+              sameAsset(outgoing.sentAmount, payment.quote.debitAmount) && incoming.completed &&
               minorValue(incoming.receivedAmount.value) >= minorValue(payment.quote.receiveAmount.value)) {
               payment.evidence.state = "SUCCEEDED";
               await this.run.save();
@@ -416,8 +502,9 @@ export class PaymentProofs {
     const unresolved = this.run.report.payments.some((payment) => ["SUBMITTING", "PROCESSING", "UNKNOWN"].includes(payment.state));
     const warnings: Record<string, unknown>[] = [];
     for (const handle of this.grants.reverse()) {
-      // keep the outgoing grant while a payment still needs checking
-      if (unresolved && handle.outgoing) continue;
+      // retain the outgoing spend authority AND the incoming read authority needed to
+      // reconcile unresolved payments; quote grants alone can be cancelled safely
+      if (unresolved && (handle.purpose === "outgoing" || handle.purpose === "incoming")) continue;
       try {
         await this.client.grant.cancel({ url: testWalletUrl(handle.continuation.uri), accessToken: handle.continuation.access_token.value });
       } catch (error) {
@@ -426,7 +513,10 @@ export class PaymentProofs {
         console.error(JSON.stringify({ event: "grant-cleanup-warning", ...safe }));
       }
     }
-    this.run.report.results.grantCleanup = { outgoingGrantsRetainedForUnresolvedPayments: unresolved, warnings };
+    this.run.report.results.grantCleanup = {
+      authoritiesRetainedForUnresolvedPayments: unresolved ? ["outgoing", "incoming"] : [],
+      warnings,
+    };
     await this.run.save();
   }
 }
