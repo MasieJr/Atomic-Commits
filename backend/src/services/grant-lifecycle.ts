@@ -20,12 +20,22 @@ export type GrantLifecycleErrorCategory =
 // explicit lifecycle phase, kept readable for tests and evidence
 export type GrantLifecyclePhase = "READY" | "ROTATION_IN_FLIGHT" | "BLOCKED" | "REAUTH_REQUIRED";
 
+// Closed, data-free diagnostics for counter failures. Never include provider text.
+export type GrantCounterFailureReason =
+  | "READ_FAILED"
+  | "MISSING_COUNTER"
+  | "MALFORMED_COUNTER"
+  | "ASSET_MISMATCH"
+  | "EXCEEDS_CAP"
+  | "CHANGED_DURING_ROTATION";
+
 // safe, sanitized rotation-rejection evidence: enumerated provider fields only.
 // error.description is never included; it would have to pass a known redactor first.
 export interface GrantLifecycleErrorDetail {
   classification: "DEFINITIVE_PROVIDER_REJECTION" | "UNKNOWN_OUTCOME";
   providerStatus?: number;
   providerCode?: string;
+  counterReason?: GrantCounterFailureReason;
 }
 
 // constant, data-free messages; provider errors, tokens and URIs must never be appended
@@ -78,6 +88,12 @@ export interface ValidatedSpentCounter {
   spentDebit: SanitizedMoney;
 }
 
+// Only validated counters are retained; no authority, token, URI or raw provider data.
+export interface RotationCounterObservation extends ValidatedSpentCounter {
+  rotationAttempt: number;
+  phase: "BEFORE" | "AFTER";
+}
+
 // small development safety margin kept before attempting a rotation on a nearly expired
 // token; deliberately not a product lifetime. any computed expiry value must still satisfy
 // the safe-integer and Date checks after the request.
@@ -109,6 +125,18 @@ const PROTOCOL_ERROR_CODES = [
 // keep only actual known auth SDK enum values; arbitrary provider strings are omitted
 function knownProtocolCode(code: string | undefined): string | undefined {
   return code !== undefined && (PROTOCOL_ERROR_CODES as readonly string[]).includes(code) ? code : undefined;
+}
+
+function counterFailure(reason: GrantCounterFailureReason, message: string, cause?: unknown): GrantLifecycleError {
+  const provider = cause instanceof OpenPaymentsClientError ? cause : undefined;
+  const status = provider?.status;
+  const code = knownProtocolCode(provider?.code);
+  return new GrantLifecycleError("UNVERIFIABLE_COUNTER", message, {
+    classification: "UNKNOWN_OUTCOME",
+    counterReason: reason,
+    ...(typeof status === "number" && Number.isInteger(status) && status >= 100 && status <= 599 ? { providerStatus: status } : {}),
+    ...(code === undefined ? {} : { providerCode: code }),
+  });
 }
 
 // parse the project's exact integer minor-unit grammar, allowing zero (idle counters),
@@ -151,6 +179,8 @@ export class OutgoingGrantLifecycle {
   private readonly consumedPairs = new Set<string>();
   // the token/management pair this lifecycle currently trusts, when it has seen one already
   private current?: { accessToken: string; manageUrl?: string };
+  private rotationAttempts = 0;
+  private readonly rotationCounters: RotationCounterObservation[] = [];
 
   constructor(private readonly ports: GrantLifecyclePorts) {}
 
@@ -163,6 +193,11 @@ export class OutgoingGrantLifecycle {
 
   get blockReason(): GrantLifecycleErrorCategory | undefined {
     return (this.blocked ?? this.ownerActionRequired)?.category;
+  }
+
+  // Return copies so report construction cannot mutate the lifecycle's evidence.
+  getRotationCounterObservations(): RotationCounterObservation[] {
+    return this.rotationCounters.map((entry) => ({ ...entry, spentDebit: { ...entry.spentDebit } }));
   }
 
   // spending seams (a future payment submission path) call this before any debit attempt
@@ -191,7 +226,7 @@ export class OutgoingGrantLifecycle {
     if (this.ownerActionRequired) throw this.ownerActionRequired;
     this.inFlight = true;
     try {
-      return await this.rotateAuthority(authority);
+      return await this.rotateAuthority(authority, ++this.rotationAttempts);
     } finally {
       this.inFlight = false;
     }
@@ -204,26 +239,29 @@ export class OutgoingGrantLifecycle {
     let amounts: OutgoingPaymentGrantSpentAmounts;
     try {
       amounts = await this.ports.readSpentAmounts({ url: authority.resourceServerUrl, accessToken: authority.accessToken });
-    } catch {
-      throw this.poison(new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider's spent counter could not be read; debits stay blocked until it is known."));
+    } catch (error) {
+      throw this.poison(counterFailure("READ_FAILED", "The provider's spent counter could not be read; debits stay blocked until it is known.", error));
     }
     try {
       if (typeof amounts !== "object" || amounts === null) {
-        throw new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider returned no usable spent counter; debits stay blocked until it is known.");
+        throw counterFailure("MALFORMED_COUNTER", "The provider returned no usable spent counter; debits stay blocked until it is known.");
       }
       const spent = amounts.spentDebitAmount;
       // an absent counter cannot be verified against the cap; a genuinely idle provider
       // behavior here stays a reconciling question for a human, not a passing assumption
       if (spent === null) {
-        throw new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider reported no debit spending counter, so it cannot be verified against the grant cap.");
+        throw counterFailure("MISSING_COUNTER", "The provider reported no debit spending counter, so it cannot be verified against the grant cap.");
+      }
+      if (spent === undefined) {
+        throw counterFailure("MISSING_COUNTER", "The provider spent debit amount is missing or malformed.");
       }
       const spentValue = parseExactAmount(spent, "provider spent debit amount", "UNVERIFIABLE_COUNTER");
       if (!sameAsset(spent, authority.budget)) {
-        throw new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider's spent counter uses a different asset or scale than the grant cap.");
+        throw counterFailure("ASSET_MISMATCH", "The provider's spent counter uses a different asset or scale than the grant cap.");
       }
       const budgetValue = parseExactAmount(authority.budget, "accepted grant cap", "UNVERIFIABLE_COUNTER");
       if (spentValue > budgetValue) {
-        throw new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider's spent counter exceeds the accepted grant cap, so the reported spending cannot be verified.");
+        throw counterFailure("EXCEEDS_CAP", "The provider's spent counter exceeds the accepted grant cap, so the reported spending cannot be verified.");
       }
       // fresh sanitized reading; the counter may legitimately be zero on an idle grant
       return {
@@ -236,17 +274,20 @@ export class OutgoingGrantLifecycle {
       };
     } catch (error) {
       // nothing here may leave the lifecycle trusting an unverifiable counter
-      if (error instanceof GrantLifecycleError) throw this.poison(error);
-      throw this.poison(new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider's spent counter could not be validated; debits stay blocked until it is known."));
+      if (error instanceof GrantLifecycleError) {
+        throw this.poison(error.detail ? error : counterFailure("MALFORMED_COUNTER", error.message));
+      }
+      throw this.poison(counterFailure("MALFORMED_COUNTER", "The provider's spent counter could not be validated; debits stay blocked until it is known."));
     }
   }
 
-  private async rotateAuthority(authority: OutgoingGrantAuthority): Promise<OutgoingGrantAuthority> {
+  private async rotateAuthority(authority: OutgoingGrantAuthority, rotationAttempt: number): Promise<OutgoingGrantAuthority> {
     // pre-call checks fail closed without poisoning: nothing was sent yet
     const manage = this.requireRotatableAuthority(authority);
     const requestStartedAt = this.ports.clock();
     // the counter must be provable before asking anything to rotate
     const before = await this.verifySpentCounter(authority);
+    this.rotationCounters.push({ rotationAttempt, phase: "BEFORE", readAt: before.readAt, spentDebit: { ...before.spentDebit } });
     // network reads take time; never POST a rotation on a token whose advertised deadline
     // no longer leaves a safe request margin
     const beforeDeadline = authority.expiresAt;
@@ -334,8 +375,9 @@ export class OutgoingGrantLifecycle {
 
     // the counter must survive the rotation exactly: invalid, reset or moved readings block
     const after = await this.verifySpentCounter({ accessToken: rotatedToken.value, budget: validated.budget, resourceServerUrl: authority.resourceServerUrl });
+    this.rotationCounters.push({ rotationAttempt, phase: "AFTER", readAt: after.readAt, spentDebit: { ...after.spentDebit } });
     if (minorValue(after.spentDebit.value) !== minorValue(before.spentDebit.value)) {
-      throw this.poison(new GrantLifecycleError("UNVERIFIABLE_COUNTER", "The provider's spent counter changed across rotation, which cannot be explained while no payment is in flight."));
+      throw this.poison(counterFailure("CHANGED_DURING_ROTATION", "The provider's spent counter changed across rotation, which cannot be explained while no payment is in flight."));
     }
     // network delay can exhaust the advertised window; a live deadline is required for use
     if (this.ports.clock() >= expiresAt) {

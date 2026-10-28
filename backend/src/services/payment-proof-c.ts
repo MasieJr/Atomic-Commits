@@ -1,7 +1,9 @@
 import {
   GrantLifecycleError,
+  type GrantCounterFailureReason,
   type OutgoingGrantAuthority,
   type OutgoingGrantLifecycle,
+  type RotationCounterObservation,
   type ValidatedSpentCounter,
 } from "./grant-lifecycle";
 import type { ApprovedSpending, PaymentProofs, PreparedPayment } from "./payment-proof";
@@ -133,7 +135,7 @@ export function rotatedApprovedSpending(previous: ApprovedSpending, authority: O
 export type ProofCPaymentSeams = Pick<PaymentProofs, "authorize" | "refreshResourceGrants" | "prepare" | "pay"> & {
   readonly sender: Pick<WalletAddress, "id" | "resourceServer">;
 };
-export type ProofCLifecycleSeams = Pick<OutgoingGrantLifecycle, "requireSpendable" | "verifySpentCounter" | "rotate">;
+export type ProofCLifecycleSeams = Pick<OutgoingGrantLifecycle, "requireSpendable" | "verifySpentCounter" | "rotate" | "getRotationCounterObservations">;
 
 // the actual production composition: consent happens exactly here, the CLOSED-OVER
 // spending holder keeps paying through the CURRENT authority, every confirmed rotation
@@ -167,6 +169,7 @@ export function createProofCPorts(
     },
     requireSpendable: () => lifecycle.requireSpendable(),
     readSpentCounter: (authority) => lifecycle.verifySpentCounter({ accessToken: authority.accessToken, budget: authority.budget, resourceServerUrl: authority.resourceServerUrl }),
+    rotationCounterObservations: () => lifecycle.getRotationCounterObservations(),
     rotateAuthority: async (authority) => {
       const rotated = await lifecycle.rotate(authority);
       if (!spending) {
@@ -197,6 +200,8 @@ export interface ProofCPorts {
   // poisoned lifecycle state must stop everything, including further rotations
   requireSpendable(): void;
   readSpentCounter(authority: OutgoingGrantAuthority): Promise<ValidatedSpentCounter>;
+  // Actual validated before/after rotation readings; missing readings are never invented.
+  rotationCounterObservations(): RotationCounterObservation[];
   // L2 core: remember-before-validate, conservative request-anchored expiry, poisoning.
   // the caller MUST swap its spending holder via rotatedApprovedSpending before any
   // later pay()/spent() read, so old tokens are never used.
@@ -230,7 +235,12 @@ export interface ProofCLifecycleFailure {
   classification?: string;
   providerStatus?: number;
   providerCode?: string;
+  counterReason?: GrantCounterFailureReason;
 }
+
+const COUNTER_FAILURE_REASONS: readonly GrantCounterFailureReason[] = [
+  "READ_FAILED", "MISSING_COUNTER", "MALFORMED_COUNTER", "ASSET_MISMATCH", "EXCEEDS_CAP", "CHANGED_DURING_ROTATION",
+];
 
 // protocol enum from the SDK's generated auth-server error schema: these are the ONLY
 // code values an authorization-server grant/token response can carry ("invalid_client",
@@ -263,6 +273,8 @@ export interface ProofCEvidence {
   rotationsAttempted: number;
   rotationsConfirmed: number;
   counterReadings: { at: number; value: string }[];
+  // Sanitized readings immediately around rotation, including partial failed attempts.
+  rotationCounterObservations: RotationCounterObservation[];
   transfers: ProofCTransfer[];
   timeline: ProofCTimelineEvent[];
   lifecycleFailures: ProofCLifecycleFailure[];
@@ -300,6 +312,7 @@ export async function runProofC(config: ProofCConfig, ports: ProofCPorts): Promi
     rotationsAttempted: 0,
     rotationsConfirmed: 0,
     counterReadings: [],
+    rotationCounterObservations: [],
     transfers: [],
     timeline: [],
     lifecycleFailures: [],
@@ -332,6 +345,8 @@ export async function runProofC(config: ProofCConfig, ports: ProofCPorts): Promi
         ...(error.detail?.providerStatus === undefined ? {} : { providerStatus: error.detail.providerStatus }),
         // whitelisted protocol enum only; free-form provider code text is dropped
         ...(sanitizedProviderCode(error.detail?.providerCode) === undefined ? {} : { providerCode: sanitizedProviderCode(error.detail?.providerCode) }),
+        ...(error.detail?.counterReason !== undefined && COUNTER_FAILURE_REASONS.includes(error.detail.counterReason)
+          ? { counterReason: error.detail.counterReason } : {}),
       });
       if (error.category === "ROTATION_REJECTED") {
         evidence.status = "FAILED";
@@ -344,6 +359,17 @@ export async function runProofC(config: ProofCConfig, ports: ProofCPorts): Promi
       evidence.lifecycleFailures.push({ category: "UNEXPECTED_ERROR" });
       evidence.status = "INCONCLUSIVE";
       evidence.reason = "An unexpected error stopped the experiment; observed evidence was preserved.";
+    }
+  }
+  // Capture observations even when rotation failed after its pre-rotation read.
+  // The lifecycle only exposes sanitized copies and never invents a missing reading.
+  try {
+    evidence.rotationCounterObservations = ports.rotationCounterObservations();
+  } catch {
+    evidence.lifecycleFailures.push({ category: "ROTATION_EVIDENCE_UNAVAILABLE" });
+    if (evidence.status === "PASSED") {
+      evidence.status = "INCONCLUSIVE";
+      evidence.reason = "Rotation counter evidence could not be retained; the run is not certified complete.";
     }
   }
   return evidence;
