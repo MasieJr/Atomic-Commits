@@ -44,10 +44,12 @@ export interface OfflineProviderAuthority {
   readonly observedAtEpochMs: number;
   readonly validUntilEpochMs: number;
   readonly cumulativeCap: Money;
-  readonly spentDebit: Money;
+  /** Null is permitted only for a newly issued, isolated grant observed as null/null. */
+  readonly spentDebit: Money | null;
+  readonly freshGrantEmpty?: boolean;
 }
 
-export interface OfflinePolicyContext {
+export interface OfflinePreQuoteContext {
   readonly nowEpochMs: number;
   readonly envelope: OfflineSpendingEnvelope;
   readonly grant: GrantAuthorization;
@@ -55,6 +57,11 @@ export interface OfflinePolicyContext {
   readonly device: OfflineDeviceEnrollment;
   readonly wallet: { readonly ownerUserId: number; readonly walletId: string; readonly verified: boolean };
   readonly merchant: { readonly scopeId: string; readonly walletId: string; readonly verified: boolean };
+  /** All outstanding debit reservations, including unresolved submissions. */
+  readonly outstandingReservations: Money;
+}
+
+export interface OfflinePolicyContext extends OfflinePreQuoteContext {
   /** Server-observed quote for the authenticated merchant, not caller-supplied debit data. */
   readonly quote: {
     readonly quoteId: string;
@@ -66,8 +73,6 @@ export interface OfflinePolicyContext {
     readonly expiresAtEpochMs: number;
   };
   readonly expectedMerchantReceive: Money;
-  /** All outstanding debit reservations, including unresolved submissions. */
-  readonly outstandingReservations: Money;
 }
 
 export type OfflinePolicyDenial =
@@ -80,7 +85,7 @@ export type OfflinePolicyDenial =
   | "CUMULATIVE_BUDGET_EXCEEDED";
 
 export type OfflinePolicyDecision =
-  | { readonly allowed: true; readonly maxPotentialDebit: Money }
+  | { readonly allowed: true; readonly maxPotentialDebit: Money; readonly requiresInitialCounterReconciliation?: true }
   | { readonly allowed: false; readonly code: OfflinePolicyDenial };
 
 function validTimestamp(value: unknown): value is number {
@@ -96,14 +101,15 @@ function denial(code: OfflinePolicyDenial): OfflinePolicyDecision {
 }
 
 /**
- * Pure, conservative pre-claim decision. This is not a reservation: a durable
- * adapter must recheck revocation, time and budgets atomically before claiming.
- * Server time is authoritative; this version permits no client-clock grace.
+ * Pure pre-quote decision. A null counter is accepted only for a newly issued,
+ * isolated grant explicitly observed as null/null and with no local spending
+ * or reservations. It must be reconciled after the first confirmed debit.
+ * A durable adapter must recheck all constraints atomically before claiming.
  */
-export function evaluateOfflineSpendingPolicy(instruction: OfflineInstructionV1, context: OfflinePolicyContext): OfflinePolicyDecision {
+export function evaluateOfflinePreQuotePolicy(instruction: OfflineInstructionV1, context: OfflinePreQuoteContext): OfflinePolicyDecision {
   try {
-    const { envelope, grant, authority, device, wallet, merchant, quote, nowEpochMs } = context;
-    if (!validTimestamp(nowEpochMs) || !envelope || !grant || !authority || !device || !wallet || !merchant || !quote) return denial("INVALID_PAYMENT_REQUEST");
+    const { envelope, grant, authority, device, wallet, merchant, nowEpochMs } = context;
+    if (!validTimestamp(nowEpochMs) || !envelope || !grant || !authority || !device || !wallet || !merchant) return denial("INVALID_PAYMENT_REQUEST");
     if (
       envelope.version !== "1" || envelope.revoked !== false || !isValidUserId(envelope.ownerUserId) ||
       !Number.isSafeInteger(envelope.grantRevocationVersion) || envelope.grantRevocationVersion < 0 ||
@@ -149,21 +155,15 @@ export function evaluateOfflineSpendingPolicy(instruction: OfflineInstructionV1,
 
     const signedLimit: Money = { value: instruction.maxDebitMinor, assetCode: instruction.assetCode, assetScale: instruction.assetScale };
     const amounts = [signedLimit, envelope.perPaymentMaxDebit, envelope.cumulativeCap, grant.perPaymentMaxDebit,
-      grant.cumulativeCap, grant.cumulativeSpent, authority.cumulativeCap, authority.spentDebit,
-      context.outstandingReservations, quote.payerDebit];
+      grant.cumulativeCap, grant.cumulativeSpent, authority.cumulativeCap, context.outstandingReservations,
+      ...(authority.spentDebit === null ? [] : [authority.spentDebit])];
     if (
       amounts.some((amount) => !validMoney(amount)) || !validMoney(signedLimit, true) ||
       !validMoney(envelope.perPaymentMaxDebit, true) || !validMoney(envelope.cumulativeCap, true) ||
       !validMoney(grant.perPaymentMaxDebit, true) || !validMoney(grant.cumulativeCap, true) ||
-      !validMoney(authority.cumulativeCap, true) || !validMoney(quote.payerDebit, true) ||
+      !validMoney(authority.cumulativeCap, true) ||
       amounts.some((amount) => !sameAsset(amount, signedLimit)) ||
-      grant.payerAssetCode !== signedLimit.assetCode || grant.payerAssetScale !== signedLimit.assetScale ||
-      !validMoney(quote.merchantReceive, true) || !validMoney(context.expectedMerchantReceive, true) ||
-      !sameAsset(quote.merchantReceive, context.expectedMerchantReceive) ||
-      quote.merchantReceive.value !== context.expectedMerchantReceive.value ||
-      quote.merchantScopeId !== merchant.scopeId || quote.payerWalletId !== envelope.payerWalletId ||
-      quote.receiverWalletId !== merchant.walletId || typeof quote.quoteId !== "string" || quote.quoteId.length === 0 ||
-      !validTimestamp(quote.expiresAtEpochMs) || quote.expiresAtEpochMs <= nowEpochMs
+      grant.payerAssetCode !== signedLimit.assetCode || grant.payerAssetScale !== signedLimit.assetScale
     ) return denial("INVALID_PAYMENT_REQUEST");
 
     const signed = BigInt(signedLimit.value);
@@ -173,19 +173,48 @@ export function evaluateOfflineSpendingPolicy(instruction: OfflineInstructionV1,
     const grantCap = BigInt(grant.cumulativeCap.value);
     const providerCap = BigInt(authority.cumulativeCap.value);
     const grantSpent = BigInt(grant.cumulativeSpent.value);
-    const providerSpent = BigInt(authority.spentDebit.value);
+    const freshEmpty = authority.spentDebit === null;
+    if (freshEmpty && (authority.freshGrantEmpty !== true || grant.cumulativeSpent.value !== "0" || context.outstandingReservations.value !== "0")) {
+      return denial("GRANT_REAUTHORIZATION_REQUIRED");
+    }
+    const providerSpent = freshEmpty ? 0n : BigInt(authority.spentDebit!.value);
     if (perPayment > grantPerPayment || envelopeCap > grantCap || envelopeCap > providerCap || grantSpent > grantCap || providerSpent > providerCap) {
       return denial("GRANT_REAUTHORIZATION_REQUIRED");
     }
-    if (signed > perPayment || signed > grantPerPayment || BigInt(quote.payerDebit.value) > signed) {
+    if (signed > perPayment || signed > grantPerPayment) {
       return denial("OVER_TRANSACTION_CEILING");
     }
-    // Reserve the signed ceiling, not just the quote, so a later quote cannot exceed it.
+    // Reserve at most the signed ceiling, automatically narrowed to the
+    // remaining trip allowance. The payer does not set a separate ceiling at
+    // every checkout, and a later quote may not exceed this reservation.
     const used = (grantSpent > providerSpent ? grantSpent : providerSpent) + BigInt(context.outstandingReservations.value);
-    if (used + signed > envelopeCap || used + signed > grantCap || used + signed > providerCap) {
+    const effectiveCap = envelopeCap < grantCap ? (envelopeCap < providerCap ? envelopeCap : providerCap) : (grantCap < providerCap ? grantCap : providerCap);
+    if (used >= effectiveCap) {
       return denial("CUMULATIVE_BUDGET_EXCEEDED");
     }
-    return { allowed: true, maxPotentialDebit: { ...signedLimit } };
+    const remaining = effectiveCap - used;
+    return { allowed: true, maxPotentialDebit: { ...signedLimit, value: (signed < remaining ? signed : remaining).toString() },
+      ...(freshEmpty ? { requiresInitialCounterReconciliation: true as const } : {}) };
+  } catch {
+    return denial("INVALID_PAYMENT_REQUEST");
+  }
+}
+
+/** Validate a fresh provider quote after the same enrollment and budget policy. */
+export function evaluateOfflineSpendingPolicy(instruction: OfflineInstructionV1, context: OfflinePolicyContext): OfflinePolicyDecision {
+  const preliminary = evaluateOfflinePreQuotePolicy(instruction, context);
+  if (!preliminary.allowed) return preliminary;
+  try {
+    const { quote, merchant, envelope, nowEpochMs } = context;
+    if (!quote || !validMoney(quote.payerDebit, true) || !sameAsset(quote.payerDebit, preliminary.maxPotentialDebit) ||
+      !validMoney(quote.merchantReceive, true) || !validMoney(context.expectedMerchantReceive, true) ||
+      !sameAsset(quote.merchantReceive, context.expectedMerchantReceive) ||
+      quote.merchantReceive.value !== context.expectedMerchantReceive.value ||
+      quote.merchantScopeId !== merchant.scopeId || quote.payerWalletId !== envelope.payerWalletId ||
+      quote.receiverWalletId !== merchant.walletId || typeof quote.quoteId !== "string" || quote.quoteId.length === 0 ||
+      !validTimestamp(quote.expiresAtEpochMs) || quote.expiresAtEpochMs <= nowEpochMs) return denial("INVALID_PAYMENT_REQUEST");
+    if (BigInt(quote.payerDebit.value) > BigInt(preliminary.maxPotentialDebit.value)) return denial("OVER_TRANSACTION_CEILING");
+    return preliminary;
   } catch {
     return denial("INVALID_PAYMENT_REQUEST");
   }

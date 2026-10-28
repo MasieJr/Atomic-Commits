@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { isValidMoney, type Money } from "./money";
+import { isValidMoney, sameAsset, type Money } from "./money";
 import type { ClaimResult } from "./ports";
 import {
   evaluateOfflineSpendingPolicy,
@@ -11,6 +11,8 @@ import {
 import {
   parseSignedOfflineInstruction,
   verifyOfflineInstructionSignature,
+  type OfflineInstructionV1,
+  type SignedOfflineInstructionV1,
 } from "./signed-offline-instruction";
 import { canonicalize, canonicalUtf8Bytes, type CanonicalLeaf } from "./serialization";
 
@@ -52,9 +54,60 @@ export interface OfflineRedemptionPorts {
 }
 
 export type OfflineReservationResult =
-  | { readonly status: "RESERVED"; readonly paymentId: string; readonly requestFingerprint: string }
+  | { readonly status: "RESERVED"; readonly paymentId: string; readonly requestFingerprint: string; readonly reservedMaximum: Money }
   | { readonly status: "REJECTED"; readonly code: OfflinePolicyDenial | "OFFLINE_CREDENTIAL_ALREADY_CLAIMED" | "CLAIM_CONFLICT" }
   | { readonly status: "RESERVATION_UNKNOWN"; readonly instructionId: string; readonly requestFingerprint: string };
+
+export type OfflineInstructionVerification =
+  | { readonly status: "VERIFIED"; readonly instruction: SignedOfflineInstructionV1; readonly requestedReceive: Money; readonly enrollment: OfflineDeviceEnrollment }
+  | { readonly status: "REJECTED"; readonly code: "INVALID_PAYMENT_REQUEST" | "MERCHANT_NOT_VERIFIED" | "DEVICE_NOT_VERIFIED" };
+
+/** Idempotency fingerprint binds the instruction, authenticated merchant and receive amount. */
+export function offlineRedemptionFingerprint(instruction: OfflineInstructionV1, merchantScopeId: string, merchantReceive: Money): string {
+  const bytes = canonicalUtf8Bytes(canonicalize({ version: "1", body: {
+    purpose: "atomic-commits/offline-redemption",
+    instruction: instruction as unknown as CanonicalLeaf,
+    merchantScopeId,
+    merchantReceive: { ...merchantReceive },
+  } }));
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Verify the existing signed format before any quote or reservation is requested. */
+export async function verifyOfflineInstruction(
+  input: unknown,
+  authenticatedMerchantScopeId: string,
+  merchantReceive: Money,
+  loadDeviceEnrollment: OfflineRedemptionPorts["loadDeviceEnrollment"],
+): Promise<OfflineInstructionVerification> {
+  const instruction = parseSignedOfflineInstruction(input);
+  if (!instruction || typeof authenticatedMerchantScopeId !== "string" || authenticatedMerchantScopeId.length === 0 ||
+    !isValidMoney(merchantReceive) || merchantReceive.value === "0" || merchantReceive.value.length > 18) {
+    return { status: "REJECTED", code: "INVALID_PAYMENT_REQUEST" };
+  }
+  if (instruction.payload.exactPurchase) {
+    if (instruction.payload.merchantScopeId !== authenticatedMerchantScopeId) return { status: "REJECTED", code: "MERCHANT_NOT_VERIFIED" };
+    const signedReceive = instruction.payload.exactPurchase.merchantReceive;
+    if (!sameAsset(signedReceive, merchantReceive) || signedReceive.value !== merchantReceive.value) {
+      return { status: "REJECTED", code: "INVALID_PAYMENT_REQUEST" };
+    }
+  }
+  const requestedReceive: Money = Object.freeze({ value: merchantReceive.value, assetCode: merchantReceive.assetCode, assetScale: merchantReceive.assetScale });
+  let enrolled: OfflineDeviceEnrollment | undefined;
+  try {
+    enrolled = await loadDeviceEnrollment(instruction.payload.envelopeId, instruction.payload.deviceId, instruction.payload.keyVersion);
+  } catch {
+    return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
+  }
+  if (!enrolled) return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
+  // Snapshot the exact key/version that was verified before any subsequent await.
+  const enrollment: OfflineDeviceEnrollment = { ...enrolled };
+  if (enrollment.active !== true || enrollment.deviceId !== instruction.payload.deviceId ||
+    enrollment.keyVersion !== instruction.payload.keyVersion || !verifyOfflineInstructionSignature(instruction, enrollment.publicKey)) {
+    return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
+  }
+  return { status: "VERIFIED", instruction, requestedReceive, enrollment };
+}
 
 /**
  * Verify a QR and reserve its ceiling, never submit a payment. The merchant
@@ -68,25 +121,9 @@ export async function reserveSignedOfflineInstruction(
   merchantReceive: Money,
   ports: OfflineRedemptionPorts,
 ): Promise<OfflineReservationResult> {
-  const instruction = parseSignedOfflineInstruction(input);
-  if (!instruction || typeof authenticatedMerchantScopeId !== "string" || authenticatedMerchantScopeId.length === 0 ||
-    !isValidMoney(merchantReceive) || merchantReceive.value === "0" || merchantReceive.value.length > 18) {
-    return { status: "REJECTED", code: "INVALID_PAYMENT_REQUEST" };
-  }
-  const requestedReceive: Money = Object.freeze({ value: merchantReceive.value, assetCode: merchantReceive.assetCode, assetScale: merchantReceive.assetScale });
-  let enrolled: OfflineDeviceEnrollment | undefined;
-  try {
-    enrolled = await ports.loadDeviceEnrollment(instruction.payload.envelopeId, instruction.payload.deviceId, instruction.payload.keyVersion);
-  } catch {
-    return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
-  }
-  if (!enrolled) return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
-  // Snapshot the exact key/version that was verified before any subsequent await.
-  const verifiedEnrollment: OfflineDeviceEnrollment = { ...enrolled };
-  if (verifiedEnrollment.active !== true || verifiedEnrollment.deviceId !== instruction.payload.deviceId ||
-    verifiedEnrollment.keyVersion !== instruction.payload.keyVersion || !verifyOfflineInstructionSignature(instruction, verifiedEnrollment.publicKey)) {
-    return { status: "REJECTED", code: "DEVICE_NOT_VERIFIED" };
-  }
+  const verified = await verifyOfflineInstruction(input, authenticatedMerchantScopeId, merchantReceive, ports.loadDeviceEnrollment.bind(ports));
+  if (verified.status !== "VERIFIED") return verified;
+  const { instruction, requestedReceive, enrollment: verifiedEnrollment } = verified;
   let context: OfflinePolicyContext | undefined;
   try {
     context = await ports.loadContext(instruction.payload.envelopeId, authenticatedMerchantScopeId, requestedReceive);
@@ -109,16 +146,14 @@ export async function reserveSignedOfflineInstruction(
   }
   const decision = evaluateOfflineSpendingPolicy(instruction.payload, { ...context, nowEpochMs: now, expectedMerchantReceive: requestedReceive });
   if (!decision.allowed) return { status: "REJECTED", code: decision.code };
+  // The generic reservation contract has no durable fresh-grant bootstrap.
+  // Only the development proof may use an explicit empty counter, with a
+  // single-use local claim and mandatory numeric reconciliation afterward.
+  if (decision.requiresInitialCounterReconciliation) return { status: "REJECTED", code: "GRANT_REAUTHORIZATION_REQUIRED" };
 
   // Bind the authenticated merchant and requested receive amount as well as the
   // signed instruction. Provider quote IDs are deliberately not fingerprinted.
-  const fingerprintBytes = canonicalUtf8Bytes(canonicalize({ version: "1", body: {
-    purpose: "atomic-commits/offline-redemption",
-    instruction: instruction.payload as unknown as CanonicalLeaf,
-    merchantScopeId: authenticatedMerchantScopeId,
-    merchantReceive: { ...requestedReceive },
-  } }));
-  const fingerprint = createHash("sha256").update(fingerprintBytes).digest("hex");
+  const fingerprint = offlineRedemptionFingerprint(instruction.payload, authenticatedMerchantScopeId, requestedReceive);
   const request: OfflineAtomicReservationRequest = {
     ownerUserId: context.envelope.ownerUserId,
     envelopeId: instruction.payload.envelopeId,
@@ -146,7 +181,7 @@ export async function reserveSignedOfflineInstruction(
     return { status: "RESERVATION_UNKNOWN", instructionId: request.instructionId, requestFingerprint: fingerprint };
   }
   if (result?.kind === "CLAIMED" && typeof result.paymentId === "string" && result.paymentId.length > 0) {
-    return { status: "RESERVED", paymentId: result.paymentId, requestFingerprint: fingerprint };
+    return { status: "RESERVED", paymentId: result.paymentId, requestFingerprint: fingerprint, reservedMaximum: { ...decision.maxPotentialDebit } };
   }
   if (result?.kind === "ALREADY_CLAIMED") return { status: "REJECTED", code: "OFFLINE_CREDENTIAL_ALREADY_CLAIMED" };
   if (result?.kind === "INSUFFICIENT_BUDGET") return { status: "REJECTED", code: "CUMULATIVE_BUDGET_EXCEEDED" };
