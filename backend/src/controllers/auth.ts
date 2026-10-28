@@ -1,13 +1,9 @@
 import bcrypt from "bcrypt";
-import type { CookieOptions, RequestHandler } from "express";
+import type { RequestHandler } from "express";
 
 import type { UserRepository } from "../models/users";
 import { DuplicateEmailError } from "../errors/auth";
-import {
-  endSession,
-  sessionCookieName,
-  startSession,
-} from "../services/session";
+import type { AccessTokenService } from "../services/tokens";
 
 /* Precomputed at registration's cost so missing users still incur bcrypt work. */
 const dummyPasswordHash =
@@ -23,7 +19,7 @@ function requestBody(body: unknown): Record<string, unknown> {
 
 export function createAuthController(
   users: UserRepository,
-  cookieOptions: CookieOptions,
+  tokens: AccessTokenService,
 ) {
   const register: RequestHandler = async (req, res) => {
     const { name, email, password } = requestBody(
@@ -86,10 +82,13 @@ export function createAuthController(
       throw error;
     }
 
-    /* log this user in (on server) and save their http session to pg session store */
-    await startSession(req, user.id);
     /* if we made it through all those catch blocks, we can let the user know we created the account */
-    res.status(201).json({ message: "Account created successfully", user });
+    /* sign them a fresh bearer token right away so registering logs you in */
+    res.status(201).json({
+      message: "Account created successfully",
+      user,
+      token: tokens.sign(user.id),
+    });
   };
 
   /* we follow the same patterns as the well documented ones above these */
@@ -117,20 +116,19 @@ export function createAuthController(
       return;
     }
 
-    await startSession(req, user.id);
+    /* sign the access token instead of creating a server-side session */
     res.json({
       message: "Login successful",
       user: { id: user.id, name: user.name, email: user.email },
+      token: tokens.sign(user.id),
     });
   };
 
-  /* gimme current user */
+  /* gimme current user, resolved from the verified bearer token */
   const me: RequestHandler = async (req, res) => {
-    const user = await users.findById(req.session.userId!);
+    const user = await users.findById(req.userId!);
 
     if (!user) {
-      await endSession(req);
-      res.clearCookie(sessionCookieName, cookieOptions);
       res.status(401).json({ error: "Account not found" });
       return;
     }
@@ -138,9 +136,9 @@ export function createAuthController(
     res.json({ user });
   };
 
-  const logout: RequestHandler = async (req, res) => {
-    await endSession(req);
-    res.clearCookie(sessionCookieName, cookieOptions);
+  /* jwt logout is client side - throw the token away, we have no server side
+  session to destroy until a token revocation mechanism exists */
+  const logout: RequestHandler = (_req, res) => {
     res.json({ message: "Logged out successfully" });
   };
 

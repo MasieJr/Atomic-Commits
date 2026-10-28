@@ -1,24 +1,19 @@
-import connectPgSimple from "connect-pg-simple";
 import express from "express";
-import session from "express-session";
 import helmet from "helmet";
 
 import { createAuthController } from "./controllers/auth";
-import { AuthStorageError } from "./errors/auth";
 import { createAuthRateLimiter } from "./middleware/auth-rate-limit";
 import { errorHandler } from "./middleware/error-handler";
 import { createUserRepository } from "./models/users";
 import { createAuthRouter } from "./routes/auth";
-import { sessionCookieName, sessionCookieOptions } from "./services/session";
+import { createAccessTokenService } from "./services/tokens";
 import { createDatabasePool } from "./db/pool";
 
 interface AppOptions {
   databaseUrl?: string;
-  sessionSecret?: string;
-  production?: boolean;
+  jwtSecret?: string;
 }
 
-const PgSessionStore = connectPgSimple(session);
 /* register the express app */
 export function createApp(options: AppOptions = {}) {
   const app = express();
@@ -38,51 +33,20 @@ export function createApp(options: AppOptions = {}) {
 
   const configured = Boolean(
     options.databaseUrl?.trim() &&
-    options.sessionSecret &&
-    options.sessionSecret.trim().length >= 32,
+    options.jwtSecret &&
+    options.jwtSecret.trim().length >= 32,
   );
 
-  /* make pool if configged, then a sessions store */
+  /* make pool if configged, then wire the jwt auth routes */
   const pool = configured
     ? createDatabasePool(options.databaseUrl!)
     : undefined;
-  const store = pool
-    ? new PgSessionStore({
-        pool,
-        schemaName: "app_private",
-        tableName: "session",
-        createTableIfMissing: false,
-        errorLog: () =>
-          console.error("PostgreSQL session storage is unavailable."),
-      })
-    : undefined;
 
-  if (pool && store) {
-    const cookieOptions = sessionCookieOptions(options.production ?? false);
+  if (pool) {
     const users = createUserRepository(pool);
-    const controller = createAuthController(users, cookieOptions);
-    const sessionMiddleware = session({
-      name: sessionCookieName,
-      store,
-      secret: options.sessionSecret!,
-      resave: false,
-      saveUninitialized: false,
-      cookie: { ...cookieOptions, maxAge: 2 * 60 * 60 * 1000 },
-    });
-
-    app.use(
-      "/api/auth",
-      (req, res, next) => {
-        sessionMiddleware(req, res, (error: unknown) => {
-          next(
-            error
-              ? new AuthStorageError("Session storage is unavailable.")
-              : undefined,
-          );
-        });
-      },
-      createAuthRouter(controller),
-    );
+    const tokens = createAccessTokenService(options.jwtSecret!);
+    const controller = createAuthController(users, tokens);
+    app.use("/api/auth", createAuthRouter(controller, tokens));
   } else {
     app.use("/api/auth", (_req, res) => {
       res.status(503).json({ error: "Authentication is not configured yet." });
@@ -98,7 +62,6 @@ export function createApp(options: AppOptions = {}) {
     app,
     authConfigured: configured,
     async close(): Promise<void> {
-      await store?.close();
       await pool?.end();
     },
   };
