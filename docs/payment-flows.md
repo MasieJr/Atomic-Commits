@@ -124,7 +124,7 @@ flowchart TD
 | Mode | Maximum credential duration | Private key holder | Redemption rule | Open constraint |
 | --- | --- | --- | --- | --- |
 | Quick | 30 seconds | Phone (device secure storage) | Single use; the first confirmed redemption consumes the entire credential | Must fall inside currently usable provider permission |
-| Errand | User-selected, up to 25 minutes | Phone (device secure storage) | Single use; same consumption rule | The 25-minute target is not yet guaranteed: the observed provider token lasted 600 seconds and renewal is unverified (see the [proofs](payment-proofs.md) and the [token lifecycle](backend-payments.md#9-token-lifecycle-and-renewal-not-implemented)) |
+| Errand | User-selected, up to 25 minutes | Phone (device secure storage) | Single use; same consumption rule | Proof C observed two rotations and a payment after 25 minutes for one Test Wallet pair; durable grant handling and offline-device integration are still required (see the [proofs](payment-proofs.md) and [token lifecycle](backend-payments.md#9-token-lifecycle-and-renewal-not-implemented)) |
 
 Both modes depend on the reusable bounded grant proven in Proof B; neither requires the payer's app JWT to reach the backend at redemption.
 

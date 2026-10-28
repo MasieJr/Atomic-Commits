@@ -29,9 +29,24 @@ npm run payment:proof-c -- --live
 
 `--live` performs network/credential/consent activity and **must only be run with explicit owner approval for that run**: the owner or an agent/operator the owner has approved may execute it. Approval of one run does not authorize a retry. The consent click at the wallet UI is always the owner's own decision (or their approved operator acting per instruction), and the wallet must belong to whoever authorizes the run. Proof runs must also stay in development mode: the command refuses to start when `NODE_ENV=production`.
 
-### Observed live run — 2026-10-28 UTC
+### Observed live runs — 2026-10-28 UTC
 
-One owner-approved Test Wallet run completed as **INCONCLUSIVE**. It recorded one payer interaction, but the initial provider spent counter could not be verified (`UNVERIFIABLE_COUNTER`), so it stopped before any debit: **zero transfers and zero rotations**. Cleanup reported no warnings and no authorities retained for unresolved payments. The outer run report is `FAILED` because the proof did not pass; this is not evidence of a failed payment. The report did not capture whether the counter was missing or its read failed, so that underlying cause remains unknown. Neither the 25-minute capability nor counter continuity has been demonstrated by this run.
+The first run was **INCONCLUSIVE** before any debit because its initial counter was unverifiable. A subsequent diagnostic also stopped before any debit and identified `MISSING_COUNTER`. Both had zero transfers and zero rotations and reported clean cleanup.
+
+After supporting the provider's explicit fresh-grant `null`/`null` response, a new owner-approved run **PASSED**:
+
+| Observation | Result |
+| --- | --- |
+| Payer approvals | One |
+| Accepted grant and per-transfer ceilings | 6.00 ZAR aggregate; 2.00 ZAR per transfer |
+| Confirmed transfers | Three; each sent 1.86 ZAR and received 0.10 EUR |
+| Initial counter | Explicit `null`/`null`, recorded as `EMPTY_NULLS`, not numeric zero; after the first transfer a numeric 1.86 ZAR reconciled exactly |
+| Rotations | Two confirmed; counters were 1.86/1.86 ZAR and 3.72/3.72 ZAR immediately before/after the respective rotations |
+| Timing | Second submission 10 minutes 4.525 seconds after approval; third 25 minutes 4.522 seconds after approval |
+| Final counter | 5.58 ZAR, matching all three confirmed debits |
+| Cleanup | No warnings and no authorities retained for unresolved payments |
+
+The original token advertised 600 seconds; the report's conservative remaining lifetime was 599 seconds after approval processing. The result demonstrates the specified 25-minute grant reuse and counter continuity for these configured Test Wallets, not offline-device redemption, durable recovery, other providers or real-money settlement.
 
 ## 3. Configuration (explicit; no defaults apply to Proof C)
 
@@ -65,7 +80,7 @@ At most three transfers happen. A successful rotation alone never shortens or re
 
 - Every token/management URI is registered for redaction *before* any validation. Rotation re-validates against the currently accepted authority (never the original, wider request), requires an unchanged total cap, and uses the rotation's own request-anchored expiry — never a re-derived `expires_in`.
 - After every confirmed rotation the spending holder is replaced atomically inside `createProofCPorts` (the exported, side-effect-free port-composition factory the CLI uses and tests can exercise): later `pay()` and spent-counter reads only ever see the rotated token and its conservative deadline, while the original grant continuation is kept unchanged for cleanup.
-- A fresh, explicit spent-counter reading must say exactly zero before any transfer; an absent counter is never assumed to be zero (that outcome is `INCONCLUSIVE` with zero submissions).
+- A fresh isolated grant must return either a numeric zero or an explicit pair of `null` spent amounts. The latter is recorded as `EMPTY_NULLS`, **not** as numeric zero. Only one bounded first transfer may proceed on that fresh validated grant, and its confirmed debit must match a numeric provider counter before any rotation or second transfer. Missing fields, a partial-null response, later null counters and read errors remain `INCONCLUSIVE`.
 - Both the aggregate remaining allowance (from the authoritative counter) and the per-payment ceiling are enforced per submission, including on a refreshed quote; no transfer is ever re-tried.
 - After each confirmed transfer, bounded read-only polling waits until the counter equals the cumulative quoted debits; a counter reset or overshoot is never tolerated.
 - Any unknown debit (`UNKNOWN` state) stops everything, preserves the recorded provider IDs, and cleanup retains the outgoing and incoming read authorities for reconciliation; cleanup failures downgrade the run to `INCONCLUSIVE`.
@@ -73,7 +88,7 @@ At most three transfers happen. A successful rotation alone never shortens or re
 
 ## 6. Classification
 
-`PASSED` requires: exactly one interactive approval; three transfers executed and confirmed; at least two rotations confirmed before their respective deadlines with an unbroken counter; explicit initial zero reading; the counter matching cumulative quoted debits after every confirmed transfer; clean cleanup (nothing retained, no warnings).
+`PASSED` requires: exactly one interactive approval; three transfers executed and confirmed; at least two rotations confirmed before their respective deadlines with an unbroken numeric counter; either an initial numeric zero or an explicitly empty fresh-grant response reconciled by the first confirmed debit; the counter matching cumulative quoted debits after every confirmed transfer; clean cleanup (nothing retained, no warnings).
 
 `FAILED` means a definitive contradiction was observed: the provider refused a required rotation, marked/rejected a transfer, the counter drifted from confirmed payments, or a quote exceeded the configured ceiling.
 
@@ -81,13 +96,15 @@ At most three transfers happen. A successful rotation alone never shortens or re
 
 `FAILED` vs `INCONCLUSIVE` is visible in the redacted evidence itself, via these observational fields — each turns true only after an actual observation: `originalAccessTokenLifetimeSeconds` and `originalDeadlineAt` (from the approved token's conservative deadline), `paymentAfterOriginalExpiryConfirmed`, `paymentAfterMinute25Confirmed`, `providerSpentCounterConsistent`, `grantRestrictionsPreserved`, `payerInteractions` (a documented alias of `interactiveApprovals`), plus `lifecycleFailures` entries carrying only the safe lifecycle category, its classification and the SDK's whitelisted status/code fields — never a raw provider description. Any counter reading below an earlier reading counts as a reset and fails the run, even if a later reading would recover to the expected total.
 
-For future runs, `rotationCounterObservations` retains each actual validated before/after rotation reading with its attempt number, timestamp and sanitized amount; an unobserved reading is omitted rather than inferred. `lifecycleFailures.counterReason` distinguishes a missing, malformed, mismatched or excessive counter, a failed read, and a changed rotation counter without retaining raw provider text. These fields do not retroactively reveal the cause of the 2026-10-28 run. Report-finalization and lock-release failures are printed as separate constant, sanitized errors.
+`rotationCounterObservations` retains each actual validated before/after rotation reading with its attempt number, timestamp and sanitized amount; an unobserved reading is omitted rather than inferred. `initialCounterObservation` and `emptyInitialCounterReconciled` distinguish a provider's empty fresh-grant response from an observed numeric zero. `lifecycleFailures.counterReason` distinguishes a missing, malformed, mismatched or excessive counter, a failed read, and a changed rotation counter without retaining raw provider text. Report-finalization and lock-release failures are printed as separate constant, sanitized errors.
 
 The bounded counter polling handles valid delayed counters: it reads repeatedly within `counterSettleMs` and stops as soon as the counter equals the confirmed cumulative debit. A counter read that errors or is aborted (operators pressing Ctrl+C included) intentionally stops the run as `INCONCLUSIVE` — a deliberately conservative fail-closed behavior: no read is retried and no debit is re-attempted, and an `INCONCLUSIVE` result explicitly does not disprove the provider capability; it says the evidence cannot be completed. Nothing in this path triggers a new consent, a re-authorization request, or a submission retry.
 
 ## 7. SDK references
 
 The runner only orchestrates existing calls: `grant.request`/interactive continuation, `token.rotate` and `outgoingPayment.getGrantSpentAmounts` (via the injected lifecycle ports), `incomingPayment.create/get/complete`, `quote.create`, `outgoingPayment.create/get`, and `grant.cancel` during cleanup. Token and URI values are redacted from all reports. The official SDK is the Interledger Open Payments JavaScript client, `@interledger/open-payments`: https://github.com/interledger/open-payments (the `@interledger/open-payments` npm package, version 7.4.x in this backend).
+
+The published [Rafiki route behavior](https://github.com/interledger/rafiki/blob/4a2c9c9ebd790babd7779a1da40c56969dfd083f/packages/backend/src/open_payments/payment/outgoing/routes.test.ts) includes a `null`/`null` response when no amounts have been spent. The proof handles only that explicit pair on its first fresh-grant observation; it does not assume missing fields or later nulls mean zero.
 
 ## 8. Scope exclusions
 

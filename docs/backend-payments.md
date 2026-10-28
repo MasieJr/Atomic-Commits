@@ -414,7 +414,7 @@ flowchart TD
     Stop --> Remote["Request provider revocation<br/>Track confirmation and in-flight outcomes"]
 ```
 
-The installed SDK exposes `client.token.rotate({ url, accessToken })` and `client.token.revoke({ url, accessToken })`; token-management calls use the provider-returned `access_token.manage` URI and the required token. Those methods exist, but their usable timing and consent requirements have not been demonstrated against this deployment. The proofs cancel grants through `client.grant.cancel` using the continuation URI/token.
+The installed SDK exposes `client.token.rotate({ url, accessToken })` and `client.token.revoke({ url, accessToken })`; token-management calls use the provider-returned `access_token.manage` URI and the required token. Proof C observed two pre-expiry rotations without a second consent and a confirmed payment after 25 minutes for the configured Test Wallet pair. Durable production rotation and other provider behavior remain unverified. The proofs cancel grants through `client.grant.cancel` using the continuation URI/token.
 
 Do not assume that `expires_in` controls the overall grant lifetime, that changing the local consent timeout changes provider expiry, or that an expired token can be rotated without interaction. Persist the management/continuation credentials and metadata only when their exact provider contract is established. The empirical 600-second observation and its consequence for the 25-minute Errand target are in the [proofs document](payment-proofs.md).
 
@@ -436,8 +436,8 @@ Ask these as product/provider decisions, not assumptions to silently implement:
 
 | Priority | Question                                                                                                                                                      | Why current evidence does not settle it                                                              |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
-| 1        | Can the backend keep usable permission for a 25-minute Errand without the payer reconnecting? What rotation/continuation works before and after token expiry? | Observed access-token expiry is 600 seconds; renewal was not exercised                               |
-| 2        | Until renewal is proven, should the allowed credential lifetime be bounded by remaining usable provider permission, or should the UI require reauthorization? | A valid signature cannot make an expired provider token usable                                       |
+| 1        | Can durable grant management maintain a 25-minute Errand for other wallets and providers? What happens after a token has already expired? | Proof C confirmed two pre-expiry rotations and a payment after 25 minutes for one Test Wallet pair; it did not demonstrate rotation after expiry or durable recovery |
+| 2        | Should the allowed credential lifetime be bounded by the currently usable provider permission, or should the UI require reauthorization? | A valid signature cannot make an expired provider token usable; Test Wallet proof does not establish all-provider behavior |
 | 3        | Does one app-owned integration identity work for unrelated payers and multiple merchant wallets?                                                              | Demo identity was borrowed from the payer; both B payments used the same recipient wallet            |
 | 4        | Are we promising true offline generation, or offline presentation of an earlier server-issued reference?                                                      | These require different storage, enrollment and UX contracts                                         |
 | 5        | Can an Errand QR be redeemed by any verified merchant, or should merchant binding be required when known?                                                     | Receiver was omitted from the grant, but a second merchant and bearer-paper risks were not tested    |
@@ -460,7 +460,7 @@ flowchart TD
     Payments --> Recovery["Resume callbacks and reconcile ambiguous provider outcomes"]
     Recovery --> Contract["Client team integrates the documented HTTP contract"]
     Contract --> Offline["Later offline milestone<br/>Public-key enrollment, signed instructions and atomic redemption"]
-    Grants --> Lifecycle["Verify renewal/expiry behavior<br/>before promising the 25-minute Errand journey"]
+    Grants --> Lifecycle["Harden observed renewal behavior<br/>before promising the 25-minute Errand journey"]
     Lifecycle --> Offline
 ```
 
@@ -468,7 +468,7 @@ Sequential steps in service of that flow:
 
 1. Agree the small wallet/grant/payment DTOs and a stable authenticated-principal adapter; this can start with current cookie auth.
 2. Add wallet-link/interaction persistence and ownership-verification endpoints.
-3. Add protected grant persistence and public metadata/status endpoints; investigate token renewal in parallel with the 25-minute decision.
+3. Add protected grant persistence and public metadata/status endpoints; harden the observed token lifecycle for durable use.
 4. Add idempotent online payment endpoints and restart-safe reconciliation.
 5. Publish the API contract for the client team. Keep developer credentials and provider tokens server-side.
 6. Add device public-key enrollment and signed redemption after the permission, money and payload contracts are settled.

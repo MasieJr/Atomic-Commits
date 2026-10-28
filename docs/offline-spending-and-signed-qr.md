@@ -2,7 +2,7 @@
 
 This branch provides a backend policy, versioned instruction parser, Ed25519 verification and a reservation orchestration seam. A payer device can eventually present an instruction offline under a previously issued envelope; settlement still requires an online merchant, backend and provider. The code is **not wired to an API, database, provider, or Flutter application** and does not submit payments.
 
-The 2026-10-28 live Proof C run was **INCONCLUSIVE** before any transfer because the provider spent counter was unverifiable. Grant continuity and the 25-minute spending window remain **UNVERIFIED**. Offline spending must not be enabled solely because these local checks pass.
+The 2026-10-28 live Proof C run **PASSED** for the configured Test Wallet pair, with two rotations and a confirmed transfer after 25 minutes. This does not demonstrate offline-device redemption, durable recovery, other providers or real-money settlement. Offline spending must not be enabled solely because these checks pass.
 
 ## Enrollment and policy
 

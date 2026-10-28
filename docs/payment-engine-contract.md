@@ -8,7 +8,7 @@ L3 defines the transport-independent payment-engine domain: types, errors, and e
 
 Contract version: `PAYMENT_ENGINE_CONTRACT_VERSION = "1"` (`serialization.ts`). Offline instruction schema version: `OFFLINE_INSTRUCTION_VERSION = "1"` (`offline.ts`).
 
-These contracts support independent adapter development with in-memory fakes. The 2026-10-28 live Proof C run was **INCONCLUSIVE** before any transfer because the initial provider counter could not be verified, so provider rotation continuity and the 25-minute spending window remain **UNVERIFIED**; consuming these interfaces does not enable that capability. See `docs/payment-proof-c.md` for the evidence gate.
+These contracts support independent adapter development with in-memory fakes. The 2026-10-28 live Proof C run **PASSED** for the configured Test Wallet pair, including two rotations and a confirmed transfer after 25 minutes. That observation does not by itself enable offline redemption, durable recovery or real-money use. See `docs/payment-proof-c.md` for the evidence and limits.
 
 ## 1. File map and exported API surface
 
