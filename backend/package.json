@@ -3,8 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
+  "bin": {
+    "atomic": "dist/src/commands/atomic.js"
+  },
   "scripts": {
     "build": "tsc",
+    "atomic": "node dist/src/commands/atomic.js",
     "start": "node dist/server.js",
     "dev": "tsx watch server.ts",
     "test": "tsx --test test/*.test.ts",
