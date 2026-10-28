@@ -88,6 +88,11 @@ export interface ValidatedSpentCounter {
   spentDebit: SanitizedMoney;
 }
 
+// An explicit pair of nulls is a provider observation, not a numeric zero.
+export type FreshGrantCounterObservation =
+  | { kind: "COUNTER"; reading: ValidatedSpentCounter }
+  | { kind: "EMPTY"; readAt: number };
+
 // Only validated counters are retained; no authority, token, URI or raw provider data.
 export interface RotationCounterObservation extends ValidatedSpentCounter {
   rotationAttempt: number;
@@ -181,6 +186,7 @@ export class OutgoingGrantLifecycle {
   private current?: { accessToken: string; manageUrl?: string };
   private rotationAttempts = 0;
   private readonly rotationCounters: RotationCounterObservation[] = [];
+  private counterReadStarted = false;
 
   constructor(private readonly ports: GrantLifecyclePorts) {}
 
@@ -232,9 +238,28 @@ export class OutgoingGrantLifecycle {
     }
   }
 
-  // read and strictly validate the provider's spent counter. reads stay possible while
-  // BLOCKED (for diagnostics), but any invalid counter poisons spending until release.
+  // Only the first read on a newly approved isolated grant may observe both
+  // counters as null. This is not an assertion that a numeric zero was read.
+  async readFreshGrantCounter(authority: { accessToken: string; budget: SanitizedMoney; resourceServerUrl: string }): Promise<FreshGrantCounterObservation> {
+    this.requireSpendable();
+    if (this.counterReadStarted || this.rotationAttempts !== 0) {
+      throw new GrantLifecycleError("UNVERIFIABLE_COUNTER", "A fresh-grant counter observation is only allowed before any other counter read or rotation.");
+    }
+    this.counterReadStarted = true;
+    return this.readCounter(authority, true);
+  }
+
+  // Ordinary reads, including all rotation boundaries, require a numeric counter.
   async verifySpentCounter(authority: { accessToken: string; budget: SanitizedMoney; resourceServerUrl: string }): Promise<ValidatedSpentCounter> {
+    this.counterReadStarted = true;
+    const observation = await this.readCounter(authority, false);
+    if (observation.kind !== "COUNTER") {
+      throw this.poison(counterFailure("MISSING_COUNTER", "The provider reported no usable debit spending counter."));
+    }
+    return observation.reading;
+  }
+
+  private async readCounter(authority: { accessToken: string; budget: SanitizedMoney; resourceServerUrl: string }, allowFreshEmpty: boolean): Promise<FreshGrantCounterObservation> {
     const readAt = this.ports.clock();
     let amounts: OutgoingPaymentGrantSpentAmounts;
     try {
@@ -250,6 +275,12 @@ export class OutgoingGrantLifecycle {
       // an absent counter cannot be verified against the cap; a genuinely idle provider
       // behavior here stays a reconciling question for a human, not a passing assumption
       if (spent === null) {
+        if (allowFreshEmpty && amounts.spentReceiveAmount === null) {
+          if (parseExactAmount(authority.budget, "accepted grant cap", "UNVERIFIABLE_COUNTER") <= 0n) {
+            throw counterFailure("MALFORMED_COUNTER", "The accepted grant cap must be positive.");
+          }
+          return { kind: "EMPTY", readAt };
+        }
         throw counterFailure("MISSING_COUNTER", "The provider reported no debit spending counter, so it cannot be verified against the grant cap.");
       }
       if (spent === undefined) {
@@ -264,14 +295,10 @@ export class OutgoingGrantLifecycle {
         throw counterFailure("EXCEEDS_CAP", "The provider's spent counter exceeds the accepted grant cap, so the reported spending cannot be verified.");
       }
       // fresh sanitized reading; the counter may legitimately be zero on an idle grant
-      return {
+      return { kind: "COUNTER", reading: {
         readAt,
-        spentDebit: {
-          value: spentValue.toString(),
-          assetCode: spent.assetCode,
-          assetScale: spent.assetScale,
-        },
-      };
+        spentDebit: { value: spentValue.toString(), assetCode: spent.assetCode, assetScale: spent.assetScale },
+      } };
     } catch (error) {
       // nothing here may leave the lifecycle trusting an unverifiable counter
       if (error instanceof GrantLifecycleError) {
