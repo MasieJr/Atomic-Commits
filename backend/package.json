@@ -13,6 +13,8 @@
     "dev": "tsx watch server.ts",
     "test": "tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "demo:seed-merchant": "npm run build && node dist/src/commands/demo-seed-merchant.js",
+    "grant:authorize": "npm run build && node dist/src/commands/grant-authorize.js",
     "demo:seed-grant": "npm run build && node dist/src/commands/demo-seed-grant.js",
     "db:migrate": "npm run build && node dist/migrate.js",
     "wallet:lookup": "npm run build && node dist/src/commands/wallet-lookup.js",

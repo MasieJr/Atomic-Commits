@@ -10,7 +10,7 @@ export const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, nex
   }
 
   if (error instanceof ApiError) {
-    res.status(error.status).json({ error: error.message });
+    res.status(error.status).json(error.code ? { error: error.message, code: error.code } : { error: error.message });
     return;
   }
 
