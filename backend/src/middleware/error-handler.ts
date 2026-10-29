@@ -1,10 +1,16 @@
 import type { ErrorRequestHandler } from 'express';
 
+import { ApiError } from '../errors/api-error';
 import { AuthStorageError } from '../errors/auth';
 
 export const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, next) => {
   if (res.headersSent) {
     next(error);
+    return;
+  }
+
+  if (error instanceof ApiError) {
+    res.status(error.status).json({ error: error.message });
     return;
   }
 

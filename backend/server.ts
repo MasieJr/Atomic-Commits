@@ -10,6 +10,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
 const { app, authConfigured, close } = createApp({
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
+  dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
 });
 
 if (require.main === module) {
