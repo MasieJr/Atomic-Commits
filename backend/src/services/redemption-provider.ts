@@ -70,6 +70,20 @@ export interface RedemptionProvider {
 
   /** Rotate the access token in place. Never asks the payer for new consent. */
   rotateAuthority(authority: OutgoingAuthority): Promise<OutgoingAuthority>;
+
+  /**
+   * Read-only recovery after a crash mid-submit: find the outgoing payment (if
+   * any) created from this quote. undefined = provider has no such payment.
+   * Throws when the provider can't be asked; the caller then stays UNKNOWN.
+   */
+  findOutgoingByQuote(args: {
+    payerWalletAddress: string;
+    quoteId: string;
+    authority: OutgoingAuthority;
+  }): Promise<{ outgoingPaymentId: string } | undefined>;
+
+  /** Cancel the payer's grant at the provider (revocation). */
+  cancelGrant(continuation: { uri: string; accessToken: string }): Promise<void>;
 }
 
 const MINOR_PATTERN = /^(0|[1-9][0-9]{0,17})$/;

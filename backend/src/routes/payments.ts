@@ -1,12 +1,17 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
 
+import type { PaymentGrantsController } from "../controllers/payment-grants";
 import type { PaymentsController } from "../controllers/payments";
 import { createRequireLogin } from "../middleware/require-login";
 import type { AccessTokenService } from "../services/tokens";
 
-/* mounted at /api; exposes /offline-redemptions and /payments/:paymentId */
-export function createPaymentsRouter(controller: PaymentsController, tokens: AccessTokenService): Router {
+/* mounted at /api: /offline-redemptions, /payments, /payment-grants */
+export function createPaymentsRouter(
+  controller: PaymentsController,
+  grants: PaymentGrantsController,
+  tokens: AccessTokenService,
+): Router {
   const router = Router();
   const requireLogin = createRequireLogin(tokens);
   const perUser = (limit: number) =>
@@ -22,6 +27,11 @@ export function createPaymentsRouter(controller: PaymentsController, tokens: Acc
 
   /* code guessing protection: at most 20 redemption attempts per merchant per minute */
   router.post("/offline-redemptions", requireLogin, perUser(20), controller.redeem);
+  router.get("/payments", requireLogin, perUser(120), controller.list);
   router.get("/payments/:paymentId", requireLogin, perUser(120), controller.get);
+
+  router.get("/payment-grants", requireLogin, perUser(120), grants.list);
+  router.get("/payment-grants/:grantId", requireLogin, perUser(120), grants.get);
+  router.delete("/payment-grants/:grantId", requireLogin, perUser(20), grants.revoke);
   return router;
 }

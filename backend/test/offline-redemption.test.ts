@@ -35,6 +35,9 @@ class FakeProvider implements RedemptionProvider {
   submits: { quoteId: string; accessToken: string }[] = [];
   reads = 0;
   rotations = 0;
+  cancels = 0;
+  /* what findOutgoingByQuote reports: 'found' = provider did create it */
+  lookup: 'found' | 'missing' | 'error' = 'missing';
   private n = 0;
 
   async prepareQuote() {
@@ -57,6 +60,13 @@ class FakeProvider implements RedemptionProvider {
     this.reads += 1;
     return this.outcome;
   }
+  async findOutgoingByQuote(args: { quoteId: string }) {
+    if (this.lookup === 'error') throw new ProviderUnknownError('down');
+    return this.lookup === 'found' ? { outgoingPaymentId: `${args.quoteId}/outgoing` } : undefined;
+  }
+  async cancelGrant() {
+    this.cancels += 1;
+  }
   async rotateAuthority(): Promise<OutgoingAuthority> {
     this.rotations += 1;
     if (this.rotateBehaviour === 'reject') throw new ProviderRejectedError('no');
@@ -68,7 +78,7 @@ class FakeProvider implements RedemptionProvider {
 async function fixture(t: TestContext) {
   const keyB64 = randomBytes(32).toString('base64');
   const provider = new FakeProvider();
-  const { app, close } = createApp({
+  const { app, close, reconcilePayments } = createApp({
     databaseUrl,
     jwtSecret: randomBytes(32).toString('hex'),
     dataEncryptionKey: keyB64,
@@ -123,6 +133,7 @@ async function fixture(t: TestContext) {
       [payer.userId, opts.source ?? 'PROVIDER', opts.cap ?? '50000', opts.perPayment ?? '5000'],
     );
     const grantId = rows[0].id as string;
+    await store.saveContinuation(pool, grantId, { uri: 'https://auth.interledger-test.dev/continue/1', accessToken: 'cont-token' });
     await store.saveAuthority(pool, grantId, {
       accessToken: 'live-token-1',
       manageUrl: 'https://auth.interledger-test.dev/manage/1',
@@ -157,7 +168,7 @@ async function fixture(t: TestContext) {
       json: { credentialType: 'totp-v1', paymentCode, merchantReceive: receive },
     });
 
-  return { call, pool, provider, register, payerWithDevice, merchant, redeem };
+  return { call, pool, provider, register, payerWithDevice, merchant, redeem, reconcilePayments };
 }
 
 test('happy path: merchant redeems an offline code, provider confirms, spend is recorded', { skip }, async (t) => {
@@ -172,6 +183,12 @@ test('happy path: merchant redeems an offline code, provider confirms, spend is 
   assert.equal(res.headers.get('location'), `/api/payments/${body.paymentId}`);
   assert.equal(body.status, 'SUCCEEDED');
   assert.deepEqual(body.payerDebitQuoted, ZAR('186'));
+  /* receipt fields come from the provider's confirmation */
+  const receipt = body as unknown as { merchantName: string; payerDebitPaid: Money; merchantReceivePaid: Money; completedAt: string };
+  assert.equal(receipt.merchantName, 'Spaza');
+  assert.deepEqual(receipt.payerDebitPaid, ZAR('186'));
+  assert.deepEqual(receipt.merchantReceivePaid, EUR('10'));
+  assert.ok(Date.parse(receipt.completedAt) > 0);
   assert.equal(f.provider.submits.length, 1);
   assert.equal(f.provider.submits[0].accessToken, 'live-token-1');
 
@@ -417,4 +434,156 @@ test('payment routes require a login', { skip }, async (t) => {
   const f = await fixture(t);
   assert.equal((await f.call('/api/offline-redemptions', { method: 'POST', json: {} })).status, 401);
   assert.equal((await f.call(`/api/payments/${randomUUID()}`)).status, 401);
+});
+
+async function fresh(f: Awaited<ReturnType<typeof fixture>>, where: string) {
+  /* helper: read an attempt row directly */
+  return (await f.pool.query(`SELECT status, error_code FROM app_private.payment_attempts WHERE ${where}`)).rows;
+}
+
+test('both parties see the payment in their receipt list', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  const { paymentId } = (await (await f.redeem(shop.token, payer.code())).json()) as { paymentId: string };
+
+  const mine = (await (await f.call('/api/payments', { token: payer.token })).json()) as {
+    asPayer: { paymentId: string }[]; asMerchant: unknown[];
+  };
+  assert.deepEqual(mine.asPayer.map((p) => p.paymentId), [paymentId]);
+  assert.equal(mine.asMerchant.length, 0);
+  const theirs = (await (await f.call('/api/payments', { token: shop.token })).json()) as {
+    asPayer: unknown[]; asMerchant: { paymentId: string }[];
+  };
+  assert.deepEqual(theirs.asMerchant.map((p) => p.paymentId), [paymentId]);
+});
+
+test('revoking a grant blocks new debits immediately and cancels it at the provider', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+
+  const view = await f.call(`/api/payment-grants/${payer.grantId}`, { token: payer.token });
+  assert.equal(view.status, 200);
+  const before = (await view.json()) as { status: string; remaining: Money };
+  assert.equal(before.status, 'ACTIVE');
+  assert.deepEqual(before.remaining, ZAR('50000'));
+
+  const res = await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token });
+  assert.equal(res.status, 200);
+  const after = (await res.json()) as { status: string; providerRevocation: string };
+  assert.equal(after.status, 'REVOKED');
+  assert.equal(after.providerRevocation, 'CONFIRMED');
+  assert.equal(f.provider.cancels, 1);
+
+  const attempt = await f.redeem(shop.token, payer.code());
+  assert.ok([409, 422].includes(attempt.status), `got ${attempt.status}`);
+  assert.equal(f.provider.submits.length, 0);
+
+  /* revoking twice is harmless and doesn't call the provider again */
+  assert.equal((await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).status, 200);
+  assert.equal(f.provider.cancels, 1);
+});
+
+test('nobody else can read or revoke a grant', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const other = await f.register();
+  assert.equal((await f.call(`/api/payment-grants/${payer.grantId}`, { token: other.token })).status, 404);
+  assert.equal((await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: other.token })).status, 404);
+  const still = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { token: payer.token })).json()) as { status: string };
+  assert.equal(still.status, 'ACTIVE');
+});
+
+test('an expired grant cannot be debited', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  await f.pool.query(
+    "UPDATE app_private.payment_grants SET valid_from = now() - interval '2 days', valid_until = now() - interval '1 second' WHERE id = $1",
+    [payer.grantId],
+  );
+  const res = await f.redeem(shop.token, payer.code());
+  assert.equal(res.status, 409);
+  assert.equal(((await res.json()) as { code: string }).code, 'GRANT_NOT_SPENDABLE');
+  assert.equal(f.provider.submits.length, 0);
+});
+
+test('provider cancellation is deferred while a payment is unresolved, then completes', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  f.provider.submitBehaviour = 'unknown';
+  const { paymentId } = (await (await f.redeem(shop.token, payer.code())).json()) as { paymentId: string };
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'DEFERRED_UNRESOLVED_PAYMENTS');
+  assert.equal(f.provider.cancels, 0);
+
+  /* the provider did create it: recovery finds it and confirms */
+  f.provider.lookup = 'found';
+  await f.reconcilePayments();
+  assert.equal((await fresh(f, `id = '${paymentId}'`))[0].status, 'SUCCEEDED');
+
+  const again = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    providerRevocation: string;
+  };
+  assert.equal(again.providerRevocation, 'CONFIRMED');
+  assert.equal(f.provider.cancels, 1);
+});
+
+test('crash recovery: an unclear submit that did reach the provider is found and settled once', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  f.provider.submitBehaviour = 'unknown';
+  const { paymentId, status } = (await (await f.redeem(shop.token, payer.code())).json()) as { paymentId: string; status: string };
+  assert.equal(status, 'UNKNOWN');
+
+  /* provider unreachable: stays UNKNOWN, budget held */
+  f.provider.lookup = 'error';
+  await f.reconcilePayments();
+  assert.equal((await fresh(f, `id = '${paymentId}'`))[0].status, 'UNKNOWN');
+
+  f.provider.lookup = 'found';
+  await f.reconcilePayments();
+  await f.reconcilePayments();
+  assert.equal((await fresh(f, `id = '${paymentId}'`))[0].status, 'SUCCEEDED');
+  const grant = await f.pool.query('SELECT cumulative_spent FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(grant.rows[0].cumulative_spent, '186');
+  assert.equal(f.provider.submits.length, 1);
+});
+
+test('crash recovery: a process that died mid-submit leaves no double debit', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  f.provider.outcome = { kind: 'PENDING' };
+  const { paymentId } = (await (await f.redeem(shop.token, payer.code())).json()) as { paymentId: string };
+
+  /* simulate a crash right after "SUBMITTING" was saved, before the provider answered */
+  await f.pool.query(
+    `UPDATE app_private.payment_attempts SET status = 'SUBMITTING', provider_attempt_ref = NULL,
+       updated_at = now() - interval '10 minutes' WHERE id = $1`,
+    [paymentId],
+  );
+  /* provider has no such payment: first pass marks UNKNOWN and holds the budget */
+  f.provider.lookup = 'missing';
+  await f.reconcilePayments();
+  assert.equal((await fresh(f, `id = '${paymentId}'`))[0].status, 'UNKNOWN');
+
+  /* still missing well after the fact: it was never submitted, so the hold is released */
+  await f.pool.query("UPDATE app_private.payment_attempts SET updated_at = now() - interval '10 minutes' WHERE id = $1", [paymentId]);
+  await f.reconcilePayments();
+  const [row] = await fresh(f, `id = '${paymentId}'`);
+  assert.equal(row.status, 'FAILED');
+  assert.equal(row.error_code, 'NOT_SUBMITTED');
+  const held = await f.pool.query(
+    "SELECT state FROM app_private.spending_reservations WHERE grant_id = $1", [payer.grantId],
+  );
+  assert.deepEqual(held.rows.map((r) => r.state), ['RELEASED']);
+  assert.equal(f.provider.submits.length, 1);
 });

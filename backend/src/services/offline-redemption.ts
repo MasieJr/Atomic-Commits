@@ -46,8 +46,13 @@ export type AttemptStatus =
 export interface PaymentView {
   readonly paymentId: string;
   readonly status: AttemptStatus;
+  readonly merchantName: string;
   readonly merchantReceiveRequested: Money;
   readonly payerDebitQuoted?: Money;
+  /** receipt: only present once the provider confirmed the payment */
+  readonly payerDebitPaid?: Money;
+  readonly merchantReceivePaid?: Money;
+  readonly completedAt?: string;
   readonly errorCode?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -107,6 +112,10 @@ interface AttemptRow {
   payer_debit_asset_code: string | null;
   payer_debit_asset_scale: number | null;
   error_code: string | null;
+  merchant_name: string;
+  payer_debit_paid_value: string | null;
+  merchant_receive_paid_value: string | null;
+  completed_at: Date | null;
   created_at: Date;
   updated_at: Date;
 }
@@ -115,6 +124,7 @@ function toView(row: AttemptRow): PaymentView {
   return {
     paymentId: row.id,
     status: row.status,
+    merchantName: row.merchant_name,
     merchantReceiveRequested: {
       value: String(row.merchant_receive_value),
       assetCode: row.merchant_receive_asset_code,
@@ -129,15 +139,38 @@ function toView(row: AttemptRow): PaymentView {
           },
         }
       : {}),
+    ...(row.status === "SUCCEEDED" && row.payer_debit_paid_value !== null
+      ? {
+          payerDebitPaid: {
+            value: String(row.payer_debit_paid_value),
+            assetCode: row.payer_debit_asset_code!,
+            assetScale: row.payer_debit_asset_scale!,
+          },
+        }
+      : {}),
+    ...(row.status === "SUCCEEDED" && row.merchant_receive_paid_value !== null
+      ? {
+          merchantReceivePaid: {
+            value: String(row.merchant_receive_paid_value),
+            assetCode: row.merchant_receive_asset_code,
+            assetScale: row.merchant_receive_asset_scale,
+          },
+        }
+      : {}),
+    ...(row.completed_at ? { completedAt: new Date(row.completed_at).toISOString() } : {}),
     ...(row.error_code ? { errorCode: row.error_code } : {}),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
   };
 }
 
-const ATTEMPT_COLUMNS = `id, status, request_fingerprint, merchant_receive_value, merchant_receive_asset_code,
-  merchant_receive_asset_scale, payer_debit_value, payer_debit_asset_code, payer_debit_asset_scale,
-  error_code, created_at, updated_at`;
+const ATTEMPT_SELECT = `SELECT a.id, a.status, a.request_fingerprint, a.merchant_receive_value,
+  a.merchant_receive_asset_code, a.merchant_receive_asset_scale, a.payer_debit_value, a.payer_debit_asset_code,
+  a.payer_debit_asset_scale, a.error_code, a.payer_debit_paid_value, a.merchant_receive_paid_value,
+  a.completed_at, a.created_at, a.updated_at, m.display_name AS merchant_name
+  FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id`;
+/* an UNKNOWN attempt with no payment at the provider after this long was never submitted */
+const NOT_SUBMITTED_AFTER_MS = 5 * 60_000;
 
 export function createOfflineRedemptionService(options: OfflineRedemptionOptions) {
   const { pool, encryption, authorities, provider } = options;
@@ -162,13 +195,13 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   }
 
   async function loadAttempt(id: string): Promise<AttemptRow> {
-    const { rows } = await pool.query(`SELECT ${ATTEMPT_COLUMNS} FROM app_private.payment_attempts WHERE id = $1`, [id]);
+    const { rows } = await pool.query(`${ATTEMPT_SELECT} WHERE a.id = $1`, [id]);
     return rows[0];
   }
 
   async function findByIdempotency(merchantId: string, key: string): Promise<AttemptRow | undefined> {
     const { rows } = await pool.query(
-      `SELECT ${ATTEMPT_COLUMNS} FROM app_private.payment_attempts WHERE merchant_id = $1 AND idempotency_key = $2`,
+      `${ATTEMPT_SELECT} WHERE a.merchant_id = $1 AND a.idempotency_key = $2`,
       [merchantId, key],
     );
     return rows[0];
@@ -224,13 +257,15 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   }
 
   /* provider-confirmed success: commit the reservation and count the spend, once */
-  async function markSucceeded(attemptId: string) {
+  async function markSucceeded(attemptId: string, sent: Money, received: Money) {
     await inTransaction(async (db) => {
       const { rows } = await db.query(
-        `UPDATE app_private.payment_attempts SET status = 'SUCCEEDED', error_code = NULL, updated_at = now()
+        `UPDATE app_private.payment_attempts
+            SET status = 'SUCCEEDED', error_code = NULL, updated_at = now(), completed_at = now(),
+                payer_debit_paid_value = $2, merchant_receive_paid_value = $3
           WHERE id = $1 AND status IN ('PROCESSING', 'UNKNOWN')
           RETURNING grant_id, payer_debit_value`,
-        [attemptId],
+        [attemptId, parseMinor(sent.value)?.toString() ?? null, parseMinor(received.value)?.toString() ?? null],
       );
       if (!rows[0]) return; /* already finalized by someone else */
       await db.query(
@@ -289,15 +324,45 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
 
   async function confirm(attemptId: string, deadlineMs: number): Promise<void> {
     const { rows } = await pool.query(
-      `SELECT a.provider_attempt_ref, a.provider_incoming_ref, a.grant_id, a.payer_debit_value,
-              a.payer_debit_asset_code, a.payer_debit_asset_scale, m.receiving_wallet_address
+      `SELECT a.status, a.provider_attempt_ref, a.provider_incoming_ref, a.provider_quote_ref, a.grant_id,
+              a.payer_debit_value, a.payer_debit_asset_code, a.payer_debit_asset_scale, a.updated_at,
+              m.receiving_wallet_address, g.payer_wallet_address
          FROM app_private.payment_attempts a
          JOIN app_private.merchants m ON m.id = a.merchant_id
+         JOIN app_private.payment_grants g ON g.id = a.grant_id
         WHERE a.id = $1`,
       [attemptId],
     );
     const row = rows[0];
-    if (!row?.provider_attempt_ref) return;
+    if (!row) return;
+    if (!row.provider_attempt_ref) {
+      /* crashed or timed out mid-submit: ask the provider (read-only) whether it exists */
+      if (row.status !== "UNKNOWN" || !row.provider_quote_ref) return;
+      let found;
+      try {
+        const authority = await authorities.loadAuthority(pool, row.grant_id);
+        if (!authority) return;
+        found = await provider.findOutgoingByQuote({
+          payerWalletAddress: row.payer_wallet_address,
+          quoteId: row.provider_quote_ref,
+          authority,
+        });
+      } catch {
+        return; /* can't tell: stay UNKNOWN, budget held */
+      }
+      if (!found) {
+        if (now() - new Date(row.updated_at).getTime() > NOT_SUBMITTED_AFTER_MS) {
+          await finishWithoutDebit(attemptId, "FAILED", "NOT_SUBMITTED");
+        }
+        return;
+      }
+      await pool.query(
+        `UPDATE app_private.payment_attempts SET provider_attempt_ref = $2, status = 'PROCESSING', updated_at = now()
+          WHERE id = $1 AND status = 'UNKNOWN' AND provider_attempt_ref IS NULL`,
+        [attemptId, found.outgoingPaymentId],
+      );
+      row.provider_attempt_ref = found.outgoingPaymentId;
+    }
     do {
       let outcome;
       try {
@@ -317,7 +382,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       } catch {
         outcome = { kind: "PENDING" as const }; /* a failed READ is retried, never the debit */
       }
-      if (outcome.kind === "SUCCEEDED") return markSucceeded(attemptId);
+      if (outcome.kind === "SUCCEEDED") return markSucceeded(attemptId, outcome.sent, outcome.received);
       if (outcome.kind === "FAILED") return finishWithoutDebit(attemptId, "FAILED", "PROVIDER_FAILED");
       if (now() + confirmPollMs > deadlineMs) return;
       await new Promise((resolve) => setTimeout(resolve, confirmPollMs));
@@ -598,13 +663,48 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     if (row.status === "SUBMITTING" && now() - new Date(row.updated_at).getTime() > STALE_SUBMITTING_MS) {
       await markUnknown(row.id);
     }
-    if (["PROCESSING", "UNKNOWN", "SUBMITTING"].includes(row.status) && row.provider_attempt_ref) {
+    if (["PROCESSING", "UNKNOWN", "SUBMITTING"].includes(row.status)) {
       await confirm(row.id, now()); /* one read-only check */
     }
     return toView(await loadAttempt(row.id));
   }
 
-  return { redeem, getPayment };
+  /* the caller's receipts: payments they made (payer) or received (merchant) */
+  async function listPayments(userId: number): Promise<{ asPayer: PaymentView[]; asMerchant: PaymentView[] }> {
+    const [payer, merchant] = await Promise.all([
+      pool.query(`${ATTEMPT_SELECT} WHERE a.payer_user_id = $1 ORDER BY a.created_at DESC LIMIT 50`, [userId]),
+      pool.query(`${ATTEMPT_SELECT} WHERE m.user_id = $1 ORDER BY a.created_at DESC LIMIT 50`, [userId]),
+    ]);
+    return { asPayer: payer.rows.map(toView), asMerchant: merchant.rows.map(toView) };
+  }
+
+  /*
+   * Crash recovery, run at startup and periodically: a SUBMITTING row left by a
+   * dead process becomes UNKNOWN (budget held), then every unresolved attempt
+   * gets one read-only provider check. Nothing is ever re-submitted.
+   */
+  async function reconcilePending(): Promise<{ checked: number }> {
+    const { rows: stale } = await pool.query(
+      `SELECT id FROM app_private.payment_attempts
+        WHERE status = 'SUBMITTING' AND updated_at < now() - make_interval(secs => $1)`,
+      [STALE_SUBMITTING_MS / 1000],
+    );
+    for (const { id } of stale) await markUnknown(id);
+    const { rows } = await pool.query(
+      `SELECT id FROM app_private.payment_attempts WHERE status IN ('PROCESSING', 'UNKNOWN')
+        ORDER BY updated_at LIMIT 50`,
+    );
+    for (const { id } of rows) {
+      try {
+        await confirm(id, now());
+      } catch {
+        /* keep going; this attempt stays unresolved */
+      }
+    }
+    return { checked: rows.length };
+  }
+
+  return { redeem, getPayment, listPayments, reconcilePending };
 }
 
 class RaceReplay extends Error {}

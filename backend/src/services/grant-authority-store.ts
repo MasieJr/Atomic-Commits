@@ -52,6 +52,11 @@ export function createGrantAuthorityStore(encryption: DataEncryption) {
       save(db, grantId, "ACCESS_TOKEN", authority),
     saveContinuation: (db: Queryable, grantId: string, continuation: ContinuationCredential) =>
       save(db, grantId, "CONTINUATION", continuation),
+    async loadContinuation(db: Queryable, grantId: string): Promise<ContinuationCredential | undefined> {
+      const value = (await load(db, grantId, "CONTINUATION")) as ContinuationCredential | undefined;
+      if (!value || typeof value.uri !== "string" || typeof value.accessToken !== "string") return undefined;
+      return value;
+    },
     async loadAuthority(db: Queryable, grantId: string): Promise<OutgoingAuthority | undefined> {
       const value = (await load(db, grantId, "ACCESS_TOKEN")) as OutgoingAuthority | undefined;
       if (!value || typeof value.accessToken !== "string" || value.accessToken.length === 0) return undefined;

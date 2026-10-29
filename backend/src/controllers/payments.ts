@@ -26,7 +26,12 @@ export function createPaymentsController(service: OfflineRedemptionService) {
     res.json(await service.getPayment(requireUserId(req.userId), req.params.paymentId));
   };
 
-  return { redeem, get };
+  /* GET /api/payments - the caller's receipts, as payer and as merchant */
+  const list: RequestHandler = async (req, res) => {
+    res.json(await service.listPayments(requireUserId(req.userId)));
+  };
+
+  return { redeem, get, list };
 }
 
 export type PaymentsController = ReturnType<typeof createPaymentsController>;

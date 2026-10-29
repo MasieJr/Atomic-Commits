@@ -7,7 +7,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be a valid TCP port');
 }
 
-const { app, authConfigured, close } = createApp({
+const { app, authConfigured, close, reconcilePayments } = createApp({
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
   dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
@@ -21,7 +21,21 @@ if (require.main === module) {
     }
   });
 
+  /* crash recovery: settle payments left unresolved by a previous run, then keep checking.
+     read-only towards the provider; it never re-submits a payment */
+  const reconcile = () => {
+    void Promise.resolve(reconcilePayments())
+      .then((result) => {
+        if (result && result.checked > 0) console.log(`Reconciled ${result.checked} unresolved payment(s).`);
+      })
+      .catch(() => console.error('Payment reconciliation pass failed; will retry.'));
+  };
+  reconcile();
+  const reconcileTimer = setInterval(reconcile, 60_000);
+  reconcileTimer.unref();
+
   const shutdown = () => {
+    clearInterval(reconcileTimer);
     server.close(() => {
       void close().catch(() => { process.exitCode = 1; });
     });

@@ -194,6 +194,33 @@ export function createOpenPaymentsRedemptionProvider(
       return { kind: "PENDING" };
     },
 
+    async findOutgoingByQuote({ payerWalletAddress, quoteId, authority }) {
+      const payer = await wallet(payerWalletAddress);
+      const client = await sdk();
+      let cursor: string | undefined;
+      /* bounded scan of the payer's most recent outgoing payments */
+      for (let page = 0; page < 5; page += 1) {
+        const result = await client.outgoingPayment.list(
+          { url: payer.resourceServer, walletAddress: payer.id, accessToken: authority.accessToken },
+          { first: 50, "wallet-address": payer.id, ...(cursor ? { cursor } : {}) },
+        );
+        const match = result.result.find((payment) => payment.quoteId === quoteId);
+        if (match) return { outgoingPaymentId: testWalletUrl(match.id) };
+        if (!result.pagination.hasNextPage || !result.pagination.endCursor) return undefined;
+        cursor = result.pagination.endCursor;
+      }
+      throw new ProviderUnknownError("Too many payments to scan safely.");
+    },
+
+    async cancelGrant(continuation) {
+      try {
+        await (await sdk()).grant.cancel({ url: testWalletUrl(continuation.uri), accessToken: continuation.accessToken });
+      } catch (error) {
+        if (isDefinitiveRejection(error)) throw new ProviderRejectedError("The provider refused the cancellation.");
+        throw new ProviderUnknownError("The cancellation outcome is unknown.");
+      }
+    },
+
     async rotateAuthority(authority: OutgoingAuthority): Promise<OutgoingAuthority> {
       if (!authority.manageUrl) throw new ProviderRejectedError("No manage URL: the payer must re-authorize.");
       const requestedAt = Date.now();

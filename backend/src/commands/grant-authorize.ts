@@ -57,7 +57,7 @@ async function main(): Promise<void> {
     const grant = await requestInteractiveGrant(
       client,
       payer.authServer,
-      { access: [{ type: "outgoing-payment", actions: ["create", "read"], identifier: payer.id, limits: { debitAmount: budget } }] },
+      { access: [{ type: "outgoing-payment", actions: ["create", "read", "list"], identifier: payer.id, limits: { debitAmount: budget } }] },
       {
         port: Number(process.env.PAYMENT_PROOF_CALLBACK_PORT ?? 3999),
         timeoutMs: 10 * 60 * 1000,
