@@ -3,8 +3,12 @@
   "version": "0.1.0",
   "private": true,
   "type": "commonjs",
+  "bin": {
+    "atomic": "dist/src/commands/atomic.js"
+  },
   "scripts": {
     "build": "tsc",
+    "atomic": "node dist/src/commands/atomic.js",
     "start": "node dist/server.js",
     "dev": "tsx watch server.ts",
     "test": "tsx --test test/*.test.ts",
@@ -14,7 +18,12 @@
     "payment:proof-a": "npm run build && node dist/src/commands/payment-proof.js a",
     "payment:proof-b": "npm run build && node dist/src/commands/payment-proof.js b",
     "payment:proofs": "npm run build && node dist/src/commands/payment-proof.js both",
-    "payment:proof-c": "npm run build && node dist/src/commands/payment-proof-c.js"
+    "payment:proof-c": "npm run build && node dist/src/commands/payment-proof-c.js",
+    "payment:token-probe": "npm run build && node dist/src/commands/token-probe.js",
+    "payment:offline-exact": "npm run build && node dist/src/commands/payment-offline-exact.js",
+    "payment:offline-voucher": "npm run build && node dist/src/commands/payment-offline-exact.js --voucher",
+    "payment:offline-trip": "npm run build && node dist/src/commands/payment-offline-exact.js --trip",
+    "payment:monthly-probe": "npm run build && node dist/src/commands/payment-monthly-probe.js"
   },
   "engines": {
     "node": ">=20"

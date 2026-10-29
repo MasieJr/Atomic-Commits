@@ -49,11 +49,22 @@ function definitiveRejection(error: unknown): boolean {
     value.status !== 408 && !value.validationErrors?.length;
 }
 
+// Resource tokens are reusable only while their provider-advertised deadline
+// is verifiable. Anchor to before the request to avoid extending their life.
+function resourceTokenDeadline(grant: GrantWithAccessToken, requestedAt: number): number | undefined {
+  const seconds = grant.access_token.expires_in;
+  if (typeof seconds !== "number" || seconds <= 0 || !Number.isSafeInteger(seconds * 1000)) return undefined;
+  const deadline = requestedAt + seconds * 1000;
+  return Number.isSafeInteger(deadline) && Number.isFinite(new Date(deadline).getTime()) ? deadline : undefined;
+}
+
 // shared provider calls for A and B
 export class PaymentProofs {
   private readonly grants: { continuation: Grant["continue"]; purpose: "incoming" | "quote" | "outgoing" }[] = [];
   private incomingGrant!: GrantWithAccessToken;
   private quoteGrant!: GrantWithAccessToken;
+  private incomingGrantExpiresAt?: number;
+  private quoteGrantExpiresAt?: number;
 
   private constructor(
     readonly run: ProofRun,
@@ -111,25 +122,38 @@ export class PaymentProofs {
   // this stays non-interactive and re-invocable: refreshing resource tokens later is
   // a maintenance read/write on existing wallets, never new outgoing payment consent.
   async initializeResourceGrants(): Promise<void> {
+    const incomingRequestedAt = Date.now();
     const incoming = await this.run.step("request recipient incoming-payment grant", () => this.client.grant.request({
       url: this.receiver.authServer,
     }, { access_token: { access: [{ type: "incoming-payment", actions: ["create", "read", "complete"] }] } }));
     this.rememberGrant(incoming, "incoming");
     if (!isFinalizedGrantWithAccessToken(incoming)) throw new Error("The recipient incoming-payment grant requires an unsupported extra interaction.");
     this.incomingGrant = incoming;
+    this.incomingGrantExpiresAt = resourceTokenDeadline(incoming, incomingRequestedAt);
 
+    const quoteRequestedAt = Date.now();
     const quote = await this.run.step("request payer quote grant", () => this.client.grant.request({
       url: this.sender.authServer,
     }, { access_token: { access: [{ type: "quote", actions: ["create", "read"] }] } }));
     this.rememberGrant(quote, "quote");
     if (!isFinalizedGrantWithAccessToken(quote)) throw new Error("The quote grant requires an unsupported extra interaction.");
     this.quoteGrant = quote;
+    this.quoteGrantExpiresAt = resourceTokenDeadline(quote, quoteRequestedAt);
   }
 
   // seam: re-run the non-interactive resource-grant maintenance over a long proof when the
   // incoming/quote tokens lapse. this only refreshes existing resource wallets and never
   // requests, renews or widens outgoing payment consent.
   async refreshResourceGrants(): Promise<void> {
+    await this.initializeResourceGrants();
+  }
+
+  // Development trip proofs can reuse the same resource grants while their
+  // advertised deadlines have a safe margin; unknown expiry is never assumed.
+  async ensureResourceGrants(): Promise<void> {
+    const requiredUntil = Date.now() + 10000;
+    if (this.incomingGrant && this.quoteGrant && this.incomingGrantExpiresAt !== undefined && this.quoteGrantExpiresAt !== undefined &&
+      this.incomingGrantExpiresAt > requiredUntil && this.quoteGrantExpiresAt > requiredUntil) return;
     await this.initializeResourceGrants();
   }
 
@@ -302,6 +326,7 @@ export class PaymentProofs {
     spending: ApprovedSpending,
     remainingBudget: Amount,
     perPaymentDebitCeiling?: Amount,
+    validateFinalQuote?: (payment: Readonly<PreparedPayment>) => void,
   ): Promise<PaymentEvidence> {
     // synchronous guard before the first await: never re-prepare or re-quote onto an
     // already-submitted payment
@@ -322,6 +347,9 @@ export class PaymentProofs {
       throw new Error("The submitted remaining budget is not at or below the approved spending budget.");
     }
     await this.refreshQuote(payment);
+    // A caller binding an exact purchase can re-check the actual quote used for
+    // submission, including any quote refreshed immediately above.
+    validateFinalQuote?.(payment);
     this.requireLiveGrant(spending);
     if (!sameAsset(payment.quote.debitAmount, remainingBudget) ||
       minorValue(payment.quote.debitAmount.value) > minorValue(remainingBudget.value)) {

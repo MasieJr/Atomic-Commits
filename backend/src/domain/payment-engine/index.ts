@@ -15,3 +15,6 @@ export * from "./events";
 export * from "./idempotency";
 export * from "./serialization";
 export * from "./ports";
+export * from "./signed-offline-instruction";
+export * from "./offline-spending-policy";
+export * from "./offline-redemption";

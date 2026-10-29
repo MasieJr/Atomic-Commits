@@ -170,12 +170,12 @@ flowchart TD
     Consent["Online approval creates a bounded provider grant"] --> Token["Observed access token: 600 seconds"]
     Token --> Window{"When does the merchant redeem?"}
     Window -->|"Within usable permission window"| Check["Backend still checks token, budget,<br/>signature, nonce, amount and provider funds"]
-    Window -->|"Beyond usable token window"| Renewal["Need proven token renewal/continuation<br/>or renewed payer interaction"]
-    Renewal --> Question["Can the provider support 25-minute Errand<br/>without the offline payer reconnecting?"]
+    Window -->|"Beyond usable token window"| Renewal["Proof C: rotate twice before token expiry"]
+    Renewal --> Question["25-minute grant reuse observed<br/>for the configured Test Wallet pair"]
     Check --> Payment["Request provider payment<br/>Confirm actual outcome"]
 ```
 
-The proof does not establish token rotation, renewal after expiry, a 25-minute offline journey, or permanent unattended access. Both proof commands cancel their temporary grants at the end of a resolved run, so historical receipts do not provide active spending permission.
+Proofs A/B alone do not establish token rotation. On 28 October 2026, [Proof C](payment-proof-c.md) confirmed three payments under one approval across two pre-expiry rotations, including a third submission after 25 minutes. It does not establish rotation after expiry, a physically offline journey, or permanent unattended access. Resolved proof runs cancel their temporary grants, so historical receipts do not provide active spending permission.
 
 ## 7. Exact scope of the evidence
 
@@ -186,13 +186,14 @@ The proof does not establish token rotation, renewal after expiry, a 25-minute o
 - Two fresh payments using one outgoing grant/token after one approval.
 - Provider spending counters consistent with the two quoted debits.
 - An aggregate over-budget request rejected without increasing spending.
+- Two pre-expiry token rotations and a confirmed payment after 25 minutes with one consent for the configured Test Wallet pair; provider counter continuity matched the confirmed debits.
 - Callback digest interoperability and bounded temporary grant cleanup.
 
 ### Not demonstrated
 
 - A different merchant wallet, unrelated payer identities, or an independently owned production integration client.
 - Another Open Payments provider, a South African bank connection, or real-money settlement.
-- Token renewal/rotation, expiry recovery, or the complete maximum Errand lifetime.
+- Rotation after an expired token, behavior at other providers or wallets, or permission lifetime beyond the observed Proof C run.
 - A physically disconnected phone, phone-held signing keys, offline QR generation or single-use merchant redemption.
 - Verified app-user wallet links, app-facing payment endpoints, encrypted durable grant storage, or multi-worker recovery/concurrency.
 
@@ -210,11 +211,13 @@ These contain provider references, amounts, statuses and redacted diagnostics. G
 
 One B run completed its two payments but the original checker incorrectly classified the provider's generic 403 as inconclusive. B was repeated after adapting the checker and adding the post-rejection counter confirmation. Across the session, **five positive transfers completed: 9.25 ZAR sent and 0.50 EUR received**. The rejected budget probes did not move funds. Failed/expired approval attempts did not submit an outgoing payment.
 
+The later Proof C run added **three confirmed transfers: 5.58 ZAR sent and 0.30 EUR received**. Its two prior inconclusive counter checks made no transfers.
+
 ## 9. What the result means for the vision
 
 The provider permission primitive needed for an unattended backend payment is demonstrably available in this specific Test Wallet setup. This supports continuing backend wallet-linking, grant management and payment API work.
 
-It does not eliminate the need for customer setup, provider funding, device enrollment, a trustworthy merchant identity or an online backend/provider at redemption. The highest-priority product question is how a 25-minute credential remains redeemable when the observed provider token lasts 10 minutes. The open decisions that follow from this limit are collected in the [backend architecture document](backend-payments.md#11-open-decisions-requiring-productprovider-answers).
+It does not eliminate the need for customer setup, provider funding, device enrollment, a trustworthy merchant identity or an online backend/provider at redemption. Proof C demonstrates proactive rotation past the original 10-minute token deadline for this Test Wallet pair; durable credential management and behavior at other providers remain open. The remaining decisions are collected in the [backend architecture document](backend-payments.md#11-open-decisions-requiring-productprovider-answers).
 
 ## References
 

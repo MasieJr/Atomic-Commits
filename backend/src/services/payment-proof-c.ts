@@ -1,6 +1,7 @@
 import {
   GrantLifecycleError,
   type GrantCounterFailureReason,
+  type FreshGrantCounterObservation,
   type OutgoingGrantAuthority,
   type OutgoingGrantLifecycle,
   type RotationCounterObservation,
@@ -135,7 +136,7 @@ export function rotatedApprovedSpending(previous: ApprovedSpending, authority: O
 export type ProofCPaymentSeams = Pick<PaymentProofs, "authorize" | "refreshResourceGrants" | "prepare" | "pay"> & {
   readonly sender: Pick<WalletAddress, "id" | "resourceServer">;
 };
-export type ProofCLifecycleSeams = Pick<OutgoingGrantLifecycle, "requireSpendable" | "verifySpentCounter" | "rotate" | "getRotationCounterObservations">;
+export type ProofCLifecycleSeams = Pick<OutgoingGrantLifecycle, "requireSpendable" | "readFreshGrantCounter" | "verifySpentCounter" | "rotate" | "getRotationCounterObservations">;
 
 // the actual production composition: consent happens exactly here, the CLOSED-OVER
 // spending holder keeps paying through the CURRENT authority, every confirmed rotation
@@ -168,6 +169,7 @@ export function createProofCPorts(
       };
     },
     requireSpendable: () => lifecycle.requireSpendable(),
+    readFreshGrantCounter: (authority) => lifecycle.readFreshGrantCounter({ accessToken: authority.accessToken, budget: authority.budget, resourceServerUrl: authority.resourceServerUrl }),
     readSpentCounter: (authority) => lifecycle.verifySpentCounter({ accessToken: authority.accessToken, budget: authority.budget, resourceServerUrl: authority.resourceServerUrl }),
     rotationCounterObservations: () => lifecycle.getRotationCounterObservations(),
     rotateAuthority: async (authority) => {
@@ -199,6 +201,7 @@ export interface ProofCPorts {
   authorizeOutgoing(aggregateBudget: Amount): Promise<{ spending: ApprovedSpending; authority: OutgoingGrantAuthority }>;
   // poisoned lifecycle state must stop everything, including further rotations
   requireSpendable(): void;
+  readFreshGrantCounter(authority: OutgoingGrantAuthority): Promise<FreshGrantCounterObservation>;
   readSpentCounter(authority: OutgoingGrantAuthority): Promise<ValidatedSpentCounter>;
   // Actual validated before/after rotation readings; missing readings are never invented.
   rotationCounterObservations(): RotationCounterObservation[];
@@ -272,6 +275,8 @@ export interface ProofCEvidence {
   confirmedTransfers: number;
   rotationsAttempted: number;
   rotationsConfirmed: number;
+  initialCounterObservation: "NOT_OBSERVED" | "NUMERIC_ZERO" | "EMPTY_NULLS";
+  emptyInitialCounterReconciled: boolean;
   counterReadings: { at: number; value: string }[];
   // Sanitized readings immediately around rotation, including partial failed attempts.
   rotationCounterObservations: RotationCounterObservation[];
@@ -311,6 +316,8 @@ export async function runProofC(config: ProofCConfig, ports: ProofCPorts): Promi
     confirmedTransfers: 0,
     rotationsAttempted: 0,
     rotationsConfirmed: 0,
+    initialCounterObservation: "NOT_OBSERVED",
+    emptyInitialCounterReconciled: false,
     counterReadings: [],
     rotationCounterObservations: [],
     transfers: [],
@@ -420,8 +427,7 @@ async function executeExperiment(config: ProofCConfig, ports: ProofCPorts, evide
   // global high-water mark: a counter reading below any earlier reading is a reset and
   // is never tolerated, even if a later reading would recover to the expected total
   let counterHighWater: bigint | undefined;
-  const readCounter = async (): Promise<bigint> => {
-    const reading = await ports.readSpentCounter(authority);
+  const observeCounter = (reading: ValidatedSpentCounter): bigint => {
     const value = minorValue(reading.spentDebit.value);
     evidence.counterReadings.push({ at: reading.readAt, value: reading.spentDebit.value });
     if (counterHighWater !== undefined && value < counterHighWater) {
@@ -430,6 +436,7 @@ async function executeExperiment(config: ProofCConfig, ports: ProofCPorts, evide
     counterHighWater = value;
     return value;
   };
+  const readCounter = async (): Promise<bigint> => observeCounter(await ports.readSpentCounter(authority));
   // bounded read-only catch-up: the counter must reach exactly the confirmed cumulative
   // debit; overshoot fails immediately and pending stays INCONCLUSIVE
   const settleCounter = async (expected: bigint): Promise<void> => {
@@ -471,11 +478,20 @@ async function executeExperiment(config: ProofCConfig, ports: ProofCPorts, evide
     }
   };
 
-  // the very first counter reading must explicitly say zero; an absent counter is never
-  // assumed to equal zero and no transfer is submitted until a real reading exists
-  const initialValue = await readCounter();
-  if (initialValue > 0n) {
-    throw new ProofCFailure("The fresh grant already reports nonzero spending, so this run is not isolated.");
+  // A new isolated grant may return the explicit pair (null, null), meaning the
+  // provider has no spent record yet. It is NOT recorded as numeric zero: only
+  // the first bounded debit may proceed, and a subsequent numeric counter must
+  // equal that confirmed debit before any rotation or second payment is allowed.
+  const initial = await ports.readFreshGrantCounter(authority);
+  if (initial.kind === "EMPTY") {
+    evidence.initialCounterObservation = "EMPTY_NULLS";
+    evidence.timeline.push({ at: initial.readAt, event: "fresh-grant-empty-counter" });
+  } else {
+    const initialValue = observeCounter(initial.reading);
+    if (initialValue > 0n) {
+      throw new ProofCFailure("The fresh grant already reports nonzero spending, so this run is not isolated.");
+    }
+    evidence.initialCounterObservation = "NUMERIC_ZERO";
   }
   let cumulative = 0n;
 
@@ -495,14 +511,21 @@ async function executeExperiment(config: ProofCConfig, ports: ProofCPorts, evide
     await ports.refreshResourceGrants();
 
     // the counter is authoritative for the remaining allowance; reset or drift fails closed
-    const freshValue = await readCounter();
-    if (freshValue > cumulative) {
-      throw new ProofCFailure("The provider's spent counter exceeds the confirmed transfers, so the ledger cannot be verified.");
+    let remaining: Amount;
+    if (index === 1 && evidence.initialCounterObservation === "EMPTY_NULLS") {
+      // First transfer only: rely on the newly issued, validated provider cap
+      // and explicit per-payment ceiling; never claim a null counter was zero.
+      remaining = { ...authority.budget };
+    } else {
+      const freshValue = await readCounter();
+      if (freshValue > cumulative) {
+        throw new ProofCFailure("The provider's spent counter exceeds the confirmed transfers, so the ledger cannot be verified.");
+      }
+      if (freshValue < cumulative) {
+        throw new ProofCFailure("The provider's spent counter decreased between confirmed transfers.");
+      }
+      remaining = { ...authority.budget, value: (minorValue(authority.budget.value) - freshValue).toString() };
     }
-    if (freshValue < cumulative) {
-      throw new ProofCFailure("The provider's spent counter decreased between confirmed transfers.");
-    }
-    const remaining: Amount = { ...authority.budget, value: (minorValue(authority.budget.value) - freshValue).toString() };
     const payment = await ports.prepareWithQuote(`C-payment-${index}`);
     if (!sameAsset(payment.quote.debitAmount, authority.budget)) {
       throw new ProofCFailure("The provider quote uses a different payer asset than the accepted grant cap.");
@@ -531,6 +554,7 @@ async function executeExperiment(config: ProofCConfig, ports: ProofCPorts, evide
       evidence.confirmedTransfers += 1;
       cumulative += minorValue(result.quotedDebit.value);
       await settleCounter(cumulative);
+      if (index === 1 && evidence.initialCounterObservation === "EMPTY_NULLS") evidence.emptyInitialCounterReconciled = true;
       if (index === 2 && submittedAt > originalDeadline) evidence.paymentAfterOriginalExpiryConfirmed = true;
       if (index === 3 && submittedAt > approvalAt + PROOF_C_OBSERVATION_MS) evidence.paymentAfterMinute25Confirmed = true;
     } else if (result.state === "FAILED" || result.state === "REJECTED") {

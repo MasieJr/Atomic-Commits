@@ -4,11 +4,11 @@ Owner of this document: L3 contract work. Consumers: **Josue** (API/persistence 
 
 ## 0. What this is, and what it is NOT
 
-L3 defines the transport-independent payment-engine domain: types, errors, and explicit ports under `backend/src/domain/payment-engine/`. It contains **no adapters, no controllers, no SQL/DB code, no notification workers, no crypto/signing, no Flutter code, and no live provider operations**. Everyone documented below must implement against these contracts without changing payment policy.
+L3 defines the transport-independent payment-engine domain: types, errors, and explicit ports under `backend/src/domain/payment-engine/`. The L4/L5 draft adds backend signature verification and offline policy alongside those contracts; it has **no device signing, adapters, controllers, SQL/DB code, notification workers, Flutter code, or live provider operations**. See `docs/offline-spending-and-signed-qr.md` for the draft's separate wire format and integration gates.
 
 Contract version: `PAYMENT_ENGINE_CONTRACT_VERSION = "1"` (`serialization.ts`). Offline instruction schema version: `OFFLINE_INSTRUCTION_VERSION = "1"` (`offline.ts`).
 
-These contracts support independent adapter development with in-memory fakes. The 2026-10-28 live Proof C run was **INCONCLUSIVE** before any transfer because the initial provider counter could not be verified, so provider rotation continuity and the 25-minute spending window remain **UNVERIFIED**; consuming these interfaces does not enable that capability. See `docs/payment-proof-c.md` for the evidence gate.
+These contracts support independent adapter development with in-memory fakes. The 2026-10-28 live Proof C run **PASSED** for the configured Test Wallet pair, including two rotations and a confirmed transfer after 25 minutes. That observation does not by itself enable offline redemption, durable recovery or real-money use. See `docs/payment-proof-c.md` for the evidence and limits.
 
 ## 1. File map and exported API surface
 
