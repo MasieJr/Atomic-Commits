@@ -9,11 +9,12 @@
  *
  * PACKET CONTRACT (strict trusted-import JSON)
  * - Exactly these fields, no more, no fewer:
- *     { "version": 1, "prefix": "4RTW", "secret": "<canonical Base32>",
- *       "algorithm": "SHA1", "digits": 6, "periodSeconds": 30,
+ *     { "version": 2, "prefix": "4RTW", "secret": "<canonical Base32>",
+ *       "algorithm": "SHA1", "codeEncoding": "BASE36-HOTP31",
+ *       "codeLength": 6, "periodSeconds": 30,
  *       "expiresAtEpochMs": <safe integer>, "revoked": false }
- * - version MUST be 1 (unsupported versions fail closed); prefix MUST match
- *   [A-Z0-9]{4,12}; algorithm MUST be exactly "SHA1"; digits MUST be 6;
+ * - version MUST be 2 (unsupported versions fail closed); prefix MUST match
+ *   [A-Z0-9]{4}; algorithm MUST be exactly "SHA1"; codeLength MUST be 6;
  *   periodSeconds MUST be 30; expiresAtEpochMs MUST be a non-negative safe
  *   integer; revoked MUST be exactly `false` (a locally known revoked packet
  *   never loads); the secret MUST decode to at least 160 bits (20 bytes).
@@ -48,6 +49,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   chmodSync,
   existsSync,
@@ -56,6 +58,7 @@ import {
   readFileSync,
   readdirSync,
   realpathSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -69,11 +72,12 @@ export const DEVICE_PROFILE_FILENAME = "device-profile.json";
 
 /** Packet schema accepted by this store (version, then fixed fields). */
 export type DeviceProfile = {
-  readonly version: 1;
+  readonly version: 2;
   readonly prefix: string;
   readonly secret: string;
   readonly algorithm: "SHA1";
-  readonly digits: 6;
+  readonly codeEncoding: "BASE36-HOTP31";
+  readonly codeLength: 6;
   readonly periodSeconds: 30;
   readonly expiresAtEpochMs: number;
   readonly revoked: false;
@@ -85,20 +89,24 @@ const PACKET_FIELDS = [
   "prefix",
   "secret",
   "algorithm",
-  "digits",
+  "codeEncoding",
+  "codeLength",
   "periodSeconds",
   "expiresAtEpochMs",
   "revoked",
 ] as const;
 
-const PACKET_VERSION = 1;
+const LEGACY_PACKET_FIELDS = ["version", "prefix", "secret", "algorithm", "digits", "periodSeconds", "expiresAtEpochMs", "revoked"] as const;
+const PACKET_VERSION = 2;
 const PACKET_ALGORITHM = "SHA1" as const;
-const PACKET_DIGITS = 6;
+const PACKET_CODE_ENCODING = "BASE36-HOTP31" as const;
+const PACKET_CODE_LENGTH = 6;
 const PACKET_PERIOD_SECONDS = 30;
 /** CLI/store secret floor: at least 160 decoded bits (20 bytes). */
 const MIN_SECRET_BYTES = 20;
-/** Public routing alias: ASCII uppercase A-Z / 0-9, length 4..12. */
-const PREFIX_PATTERN = /^[A-Z0-9]{4,12}$(?![\s\S])/;
+/** New aliases are exactly four uppercase alphanumeric characters. */
+const PREFIX_PATTERN = /^[A-Z0-9]{4}$(?![\s\S])/;
+const LEGACY_PREFIX_PATTERN = /^[A-Z0-9]{4,12}$(?![\s\S])/;
 
 /**
  * Error whose message is SAFE to show the user: constant, data-free, and
@@ -133,6 +141,7 @@ const PACKET_EXPIRED = "Enrollment packet is already expired.";
 const ACL_UNAVAILABLE = "Windows ACL protection is unavailable in this environment.";
 const PATH_OVERRIDE_INVALID = "ATOMIC_DEVICE_HOME must be an absolute path when set.";
 const PROFILE_HOME_UNREADABLE = "The device directory could not be inspected.";
+const PROFILE_UPGRADE_FAILED = "The local device profile could not be safely upgraded; check its protection and retry.";
 
 /**
  * Loads a profile iff it exists, is regular, un-symlinked, still protected,
@@ -141,6 +150,11 @@ const PROFILE_HOME_UNREADABLE = "The device directory could not be inspected.";
  * `assertProfileUsable` is the fail-closed check used by the pay path.
  */
 export function loadDeviceProfile(home: string, _nowEpochMs = Date.now()): DeviceProfile {
+  return validateDeviceProfile(strictJsonParse(readProtectedProfile(home)));
+}
+
+/** Read a profile only after checking its location and at-rest protection. */
+function readProtectedProfile(home: string): string {
   let homeStat: ReturnType<typeof lstatSync>;
   try {
     homeStat = lstatSync(home);
@@ -179,7 +193,7 @@ export function loadDeviceProfile(home: string, _nowEpochMs = Date.now()): Devic
   } catch {
     throw new AtomicStoreError(UNREADABLE_PROFILE);
   }
-  return validateDeviceProfile(strictJsonParse(text));
+  return text;
 }
 
 /** Fail-closed usability: rejects locally known revoked or expired profiles. */
@@ -222,22 +236,28 @@ export function parseEnrollmentPacket(text: string, nowEpochMs: number): DeviceP
  * Returns a NEW object in fixed field order (safe for canonical storage).
  */
 export function validateDeviceProfile(value: unknown): DeviceProfile {
+  return validateProfile(value, false).profile;
+}
+
+function validateProfile(value: unknown, allowLegacy: boolean): { profile: DeviceProfile; legacyPrefix?: string } {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new AtomicStoreError(MALFORMED_PROFILE);
   }
   const packet = value as Record<string, unknown>;
-  if (packet.version !== PACKET_VERSION) {
+  const legacy = allowLegacy && packet.version === 1;
+  if (!legacy && packet.version !== PACKET_VERSION) {
     throw new AtomicStoreError(UNSUPPORTED_VERSION);
   }
+  const fields: readonly string[] = legacy ? LEGACY_PACKET_FIELDS : PACKET_FIELDS;
   const keys = Object.keys(packet);
   if (
-    keys.length !== PACKET_FIELDS.length ||
-    PACKET_FIELDS.some((field) => !keys.includes(field))
+    keys.length !== fields.length ||
+    fields.some((field) => !keys.includes(field))
   ) {
     throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
   }
   const prefix = packet.prefix;
-  if (typeof prefix !== "string" || !PREFIX_PATTERN.test(prefix)) {
+  if (typeof prefix !== "string" || !(legacy ? LEGACY_PREFIX_PATTERN : PREFIX_PATTERN).test(prefix)) {
     throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
   }
   if (!isValidTotpSecret(packet.secret, MIN_SECRET_BYTES)) {
@@ -246,7 +266,8 @@ export function validateDeviceProfile(value: unknown): DeviceProfile {
   if (packet.algorithm !== PACKET_ALGORITHM) {
     throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
   }
-  if (packet.digits !== PACKET_DIGITS) {
+  if (legacy ? packet.digits !== 6 :
+    packet.codeEncoding !== PACKET_CODE_ENCODING || packet.codeLength !== PACKET_CODE_LENGTH) {
     throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
   }
   if (packet.periodSeconds !== PACKET_PERIOD_SECONDS) {
@@ -265,14 +286,18 @@ export function validateDeviceProfile(value: unknown): DeviceProfile {
     throw new AtomicStoreError(PROFILE_REVOKED);
   }
   return {
-    version: 1,
-    prefix,
-    secret: packet.secret as string,
-    algorithm: "SHA1",
-    digits: 6,
-    periodSeconds: 30,
-    expiresAtEpochMs,
-    revoked: false,
+    profile: {
+      version: 2,
+      prefix: legacy ? prefix.slice(0, 4) : prefix,
+      secret: packet.secret as string,
+      algorithm: "SHA1",
+      codeEncoding: "BASE36-HOTP31",
+      codeLength: 6,
+      periodSeconds: 30,
+      expiresAtEpochMs,
+      revoked: false,
+    },
+    ...(legacy ? { legacyPrefix: prefix } : {}),
   };
 }
 
@@ -292,7 +317,7 @@ function strictJsonParse(text: string): unknown {
 
 /**
  * Canonical, fixed-order JSON serialization of a validated profile. Only
- * the eight contract fields are stored, in the declared order.
+ * the contract fields are stored, in the declared order.
  */
 function serializeProfile(profile: DeviceProfile): string {
   return `${JSON.stringify(
@@ -301,7 +326,8 @@ function serializeProfile(profile: DeviceProfile): string {
       prefix: profile.prefix,
       secret: profile.secret,
       algorithm: profile.algorithm,
-      digits: profile.digits,
+      codeEncoding: profile.codeEncoding,
+      codeLength: profile.codeLength,
       periodSeconds: profile.periodSeconds,
       expiresAtEpochMs: profile.expiresAtEpochMs,
       revoked: profile.revoked,
@@ -309,6 +335,36 @@ function serializeProfile(profile: DeviceProfile): string {
     null,
     2,
   )}\n`;
+}
+
+/** Upgrade a protected v1 profile without replacing its secret or expiry. */
+export function prepareExistingDeviceProfile(home: string, nowEpochMs: number): { profile: DeviceProfile; upgraded: boolean } {
+  const original = readProtectedProfile(home);
+  const parsed = validateProfile(strictJsonParse(original), true);
+  assertProfileUsable(parsed.profile, nowEpochMs);
+  if (parsed.legacyPrefix === undefined) return { profile: parsed.profile, upgraded: false };
+
+  const profilePath = deviceProfilePath(home);
+  const temporary = path.join(home, `.atomic-profile-${randomBytes(12).toString("hex")}.tmp`);
+  let created = false;
+  try {
+    // The enclosing directory is already protected; the temporary profile is
+    // protected and checked before replacing the original on the same volume.
+    writeFileSync(temporary, serializeProfile(parsed.profile), { mode: 0o600, flag: "wx" });
+    created = true;
+    protectFile(temporary);
+    verifyDeviceProtection(home, temporary);
+    if (readProtectedProfile(home) !== original) throw new Error("Profile changed during upgrade");
+    renameSync(temporary, profilePath);
+    created = false;
+    verifyDeviceProtection(home, profilePath);
+  } catch {
+    if (created) {
+      try { unlinkSync(temporary); } catch { /* best-effort cleanup */ }
+    }
+    throw new AtomicStoreError(PROFILE_UPGRADE_FAILED);
+  }
+  return { profile: parsed.profile, upgraded: true };
 }
 
 /** Profile path inside a device directory (paths are not secret material). */

@@ -3,14 +3,15 @@
  * `atomic` - offline payer-side demo CLI.
  *
  * Commands:
+ *   atomic setup                  Create a protected local device if needed.
  *   atomic enroll --file <path>   Import a trusted, one-time enrollment packet.
- *   atomic pay                    Print the current PREFIX-123456 credential.
+ *   atomic pay                    Print the current XXXX-XXXXXX credential.
  *   atomic status                 Print locally stored enrollment facts.
  *
  * `pay` and `status` are STRICTLY LOCAL: no network access, no provider or
  * Open Payments resources, no credentials, no database. `pay` computes an
- * RFC 6238 TOTP (HMAC-SHA1, six decimal digits, 30-second step) from the
- * locally enrolled secret.
+ * time-based HMAC-SHA1 code (six base36 characters, 30-second step) from
+ * the locally enrolled secret. The encoding is not standard decimal TOTP.
  *
  * NON-DISCLOSURE: the TOTP secret is never read from, or written to, command
  * arguments, the environment, stdout/stderr, or logs. It lives only inside
@@ -32,15 +33,19 @@ import {
   isMissingProfileError,
   loadDeviceProfile,
   parseEnrollmentPacket,
+  prepareExistingDeviceProfile,
   resolveDeviceHome,
   saveDeviceProfile,
+  type DeviceProfile,
 } from "../cli/local-device-store";
 import { formatPaymentCode, generateTotp } from "../domain/payment-engine/totp";
+import { randomBytes, randomInt } from "node:crypto";
 import { readFileSync } from "node:fs";
 
 const USAGE = `Usage:
+  atomic setup                  Create a protected local device if needed.
   atomic enroll --file <path>   Import a trusted, one-time enrollment packet.
-  atomic pay                    Print the current PREFIX-123456 credential.
+  atomic pay                    Print the current XXXX-XXXXXX credential.
   atomic status                 Print locally stored enrollment facts.`;
 
 const ENROLL_DISCLAIMER =
@@ -52,6 +57,9 @@ const STATUS_NOT_ENROLLED =
 const STATUS_DISCLAIMER =
   "This status shows locally stored enrollment facts only. It does not show wallet balance, provider grant validity, or any current payment authorization.";
 const GENERIC_FAILURE = "Failed, and detail is suppressed for safety.";
+const LOCAL_DEVICE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const PREFIX_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 /** I/O boundary for the CLI so the command logic stays pluggable. */
 export type AtomicIo = {
@@ -103,6 +111,55 @@ function parseEnrollArgs(rest: readonly string[]): string {
     throw new AtomicCliError(USAGE);
   }
   return packetPath;
+}
+
+/** Every character has five uniformly random bits; 32 characters encode 20 bytes. */
+function randomBase32(length: number): string {
+  return Array.from(randomBytes(length), (byte) => BASE32_ALPHABET[byte & 31]).join("");
+}
+
+function randomPrefix(): string {
+  return Array.from({ length: 4 }, () => PREFIX_ALPHABET[randomInt(PREFIX_ALPHABET.length)]).join("");
+}
+
+/** Create or reuse a protected profile; safely upgrade valid legacy profiles. */
+function runSetup(io: AtomicIo): number {
+  const home = resolveDeviceHome(io.env);
+  try {
+    const { profile, upgraded } = prepareExistingDeviceProfile(home, io.now());
+    io.stdout(upgraded ? "Updated the local device to the four-by-six code format." : "Local device is already set up.");
+    io.stdout(`Prefix: ${profile.prefix}`);
+    io.stdout(`Device profile: ${deviceProfilePath(home)}`);
+    if (upgraded) io.stdout("The backend must register the updated prefix and code format before redemption.");
+    return 0;
+  } catch (err) {
+    if (!isMissingProfileError(err)) throw err;
+  }
+
+  const now = io.now();
+  const expiresAtEpochMs = now + LOCAL_DEVICE_LIFETIME_MS;
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(expiresAtEpochMs) ||
+    !Number.isFinite(new Date(expiresAtEpochMs).getTime())) {
+    throw new AtomicCliError("The device clock is invalid; fix it before setup.");
+  }
+  const profile: DeviceProfile = {
+    version: 2,
+    prefix: randomPrefix(),
+    secret: randomBase32(32),
+    algorithm: "SHA1",
+    codeEncoding: "BASE36-HOTP31",
+    codeLength: 6,
+    periodSeconds: 30,
+    expiresAtEpochMs,
+    revoked: false,
+  };
+  const { profilePath } = saveDeviceProfile(home, profile);
+  io.stdout("Created a protected local device profile.");
+  io.stdout(`Prefix: ${profile.prefix}`);
+  io.stdout(`Local enrollment expires at: ${formatEpochMs(expiresAtEpochMs)} (local data only).`);
+  io.stdout(`Device profile: ${profilePath}`);
+  io.stdout("The backend must register this device before a merchant can redeem its codes.");
+  return 0;
 }
 
 function runEnroll(rest: readonly string[], io: AtomicIo): number {
@@ -180,8 +237,11 @@ export function runAtomic(argv: readonly string[], io: AtomicIo): number {
     return 0;
   }
   try {
-    if ((command === "pay" || command === "status") && rest.length !== 0) {
+    if ((command === "setup" || command === "pay" || command === "status") && rest.length !== 0) {
       throw new AtomicCliError(USAGE);
+    }
+    if (command === "setup") {
+      return runSetup(io);
     }
     if (command === "enroll") {
       return runEnroll(rest, io);
@@ -192,7 +252,7 @@ export function runAtomic(argv: readonly string[], io: AtomicIo): number {
     if (command === "status") {
       return runStatus(io);
     }
-    io.stderr(`${command === undefined ? USAGE : `Unknown command: expected 'enroll', 'pay', or 'status'.\n\n${USAGE}`}`);
+    io.stderr(`${command === undefined ? USAGE : `Unknown command: expected 'setup', 'enroll', 'pay', or 'status'.\n\n${USAGE}`}`);
     return 1;
   } catch (err) {
     const message =

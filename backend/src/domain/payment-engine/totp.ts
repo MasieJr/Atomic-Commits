@@ -1,10 +1,10 @@
 /**
  * TOTP payment code — pure generator/verifier.
  *
- * - RFC 6238 HMAC-SHA1, six DECIMAL digits, 30-second time step; the HMAC
- *   input is the 8-byte big-endian time-step counter (RFC 4226 §5.3), and
- *   six digits are the dynamic-truncation value mod 10^6, leading zeros
- *   preserved ("081804" stays "081804").
+ * - 30-second RFC 6238 counter and HMAC-SHA1 with RFC 4226 dynamic
+ *   truncation. The 31-bit result is encoded as six uppercase base36
+ *   characters, left-padded with zeroes. This presentation is NOT compatible
+ *   with standard six-decimal-digit TOTP; both sides must use this contract.
  * - No database, no network, no internal clock: `atEpochMs` is injected on
  *   every call as a non-negative safe-integer number of epoch milliseconds.
  *   `expiresAtEpochMs` is the exact step-aligned instant
@@ -34,7 +34,7 @@
  *   earlier, one step later (never before the epoch) — and the first match
  *   determines the reported timeStep, so identical inputs always yield
  *   identical results.
- * - The six-digit space is only 10^6, so distinct steps CAN share a code,
+ * - The 31-bit output space is finite, so distinct steps CAN share a code,
  *   and the same presented code can also be accepted at two different
  *   clocks, each resolving to its own timeStep. Verification is NOT replay
  *   protection: the backend MUST atomically claim the (device, timeStep)
@@ -59,8 +59,7 @@ export type TotpVerification =
   | { readonly valid: true; readonly timeStep: number }
   | { readonly valid: false };
 
-const TOTP_DIGITS = 6;
-const TOTP_DIVISOR = 10 ** TOTP_DIGITS;
+const CODE_LENGTH = 6;
 /** RFC 6238 recommends seeds of at least 128 bits. */
 const MIN_SECRET_BYTES = 16;
 /** The backend contract allows the current step plus at most one adjacent. */
@@ -76,18 +75,18 @@ const CANONICAL_BASE32_RESIDUES = [2, 4, 5, 7] as const;
 
 // The negative lookahead requires the actual end of the string: JavaScript's
 // `$` alone also matches just before a trailing newline.
-const SIX_DIGIT_PATTERN = /^[0-9]{6}$(?![\s\S])/;
-/** Public routing alias: ASCII uppercase A-Z / 0-9, length 4..12. */
-const PAYMENT_CODE_PREFIX_PATTERN = /^[A-Z0-9]{4,12}$(?![\s\S])/;
-/** Full presented form: PREFIX-123456 with nothing else attached. */
-const PAYMENT_CODE_PATTERN = /^([A-Z0-9]{4,12})-([0-9]{6})$(?![\s\S])/;
+const CODE_PATTERN = /^[A-Z0-9]{6}$(?![\s\S])/;
+/** Public routing alias: exactly four uppercase ASCII letters or digits. */
+const PAYMENT_CODE_PREFIX_PATTERN = /^[A-Z0-9]{4}$(?![\s\S])/;
+/** Full presented form: XXXX-XXXXXX with nothing else attached. */
+const PAYMENT_CODE_PATTERN = /^([A-Z0-9]{4})-([A-Z0-9]{6})$(?![\s\S])/;
 
 /** Generic construction-time error messages; constant and data-free. */
 const INVALID_TOTP_TIME = "TOTP time must be a non-negative whole number of milliseconds.";
 const INVALID_TOTP_SECRET = "TOTP secret is missing, malformed, or below the strength floor.";
 const INVALID_TOTP_DRIFT = "TOTP drift window is outside the supported 0..1 adjacent-step range.";
-const INVALID_PAYMENT_CODE_PREFIX = "Payment code prefix must be 4-12 ASCII uppercase A-Z/0-9 characters.";
-const INVALID_PAYMENT_CODE_BODY = "Payment code must be exactly six decimal characters.";
+const INVALID_PAYMENT_CODE_PREFIX = "Payment code prefix must be four uppercase A-Z/0-9 characters.";
+const INVALID_PAYMENT_CODE_BODY = "Payment code must be six uppercase A-Z/0-9 characters.";
 
 /**
  * Validated positive-safe-integer time, whole milliseconds since the epoch.
@@ -179,8 +178,8 @@ export function isValidTotpSecret(secret: unknown, minimumBytes = MIN_SECRET_BYT
   return key !== null && key.length >= minimumBytes;
 }
 
-/** HOTP (RFC 4226) truncated decimal output, six digits, from a counter. */
-function hotpSixDigits(key: Uint8Array, counter: bigint): string {
+/** Encode the RFC 4226 31-bit dynamic truncation as six uppercase base36 characters. */
+function hotpBase36(key: Uint8Array, counter: bigint): string {
   const counterBytes = Buffer.alloc(8);
   counterBytes.writeBigUInt64BE(counter, 0);
   const digest = createHmac("sha1", key).update(counterBytes).digest();
@@ -191,14 +190,12 @@ function hotpSixDigits(key: Uint8Array, counter: bigint): string {
     ((digest[offset + 1] & 0xff) << 16) |
     ((digest[offset + 2] & 0xff) << 8) |
     (digest[offset + 3] & 0xff);
-  // The top nibble stays <= 0x7, so `selector` is always a non-negative
-  // 31-bit integer and the modulo cannot produce a negative remainder.
-  return String(selector % TOTP_DIVISOR).padStart(TOTP_DIGITS, "0");
+  return selector.toString(36).toUpperCase().padStart(CODE_LENGTH, "0");
 }
 
-/** True iff the value is a bare six-digit decimal string (leading zeros ok). */
-function isSixDigitCode(code: unknown): code is string {
-  return typeof code === "string" && SIX_DIGIT_PATTERN.test(code);
+/** True iff the value is a bare six-character uppercase alphanumeric string. */
+function isCode(code: unknown): code is string {
+  return typeof code === "string" && CODE_PATTERN.test(code);
 }
 
 /**
@@ -207,7 +204,7 @@ function isSixDigitCode(code: unknown): code is string {
  * the code stops being current ((step + 1) * 30 000).
  *
  * Throws a generic Error on malformed secret or malformed time; safe inputs
- * always produce a well-formed six-digit code.
+ * always produce a well-formed six-character alphanumeric code.
  */
 export function generateTotp(secret: string, atEpochMs: number): TotpGeneration {
   const time = assertValidAtEpochMs(atEpochMs);
@@ -219,14 +216,14 @@ export function generateTotp(secret: string, atEpochMs: number): TotpGeneration 
   const expiresAtEpochMs = (timeStep + 1) * TOTP_TIME_STEP_MS;
   if (!Number.isSafeInteger(expiresAtEpochMs)) throw new Error(INVALID_TOTP_TIME);
   return {
-    code: hotpSixDigits(key, BigInt(timeStep)),
+    code: hotpBase36(key, BigInt(timeStep)),
     timeStep,
     expiresAtEpochMs,
   };
 }
 
 /**
- * Verify a presented six-digit code against the secret at `atEpochMs`,
+ * Verify a presented six-character code against the secret at `atEpochMs`,
  * accepting the drift window given by `allowedDriftSteps`
  * (0 = current step only, 1 = current plus one step on each side, never
  * before the epoch). The window is never widened: a `allowedDriftSteps`
@@ -236,7 +233,7 @@ export function generateTotp(secret: string, atEpochMs: number): TotpGeneration 
  *
  * Deterministic: candidates are always probed as current step first, then
  * one step earlier, then one step later, and the first match is returned —
- * see the header note on six-digit collisions. The returned timeStep is the
+ * see the header note on code collisions. The returned timeStep is the
  * key the backend must atomically claim exactly once.
  *
  * Throws only on an out-of-range `allowedDriftSteps`, which is caller
@@ -258,7 +255,7 @@ export function verifyTotp(
   }
   const key = decodeBase32Secret(secret);
   if (key === null) return { valid: false };
-  if (!isSixDigitCode(code)) return { valid: false };
+  if (!isCode(code)) return { valid: false };
   if (
     typeof atEpochMs !== "number" ||
     !Number.isSafeInteger(atEpochMs) ||
@@ -275,7 +272,7 @@ export function verifyTotp(
     const candidateStep = timeStep + offset;
     if (candidateStep < 0) continue;
     const candidate = Buffer.from(
-      hotpSixDigits(key, BigInt(candidateStep)),
+      hotpBase36(key, BigInt(candidateStep)),
       "utf8",
     );
     // Equal-length, content-only, constant-time comparison.
@@ -287,17 +284,14 @@ export function verifyTotp(
 }
 
 /**
- * Render the presented form "PREFIX-123456" (a single hyphen separator,
- * nothing else). Throws a generic Error when the prefix or the code violates
- * the contract: prefix must be 4..12 ASCII uppercase A-Z/0-9 characters; code
- * must be exactly six decimal digits ("081804", with its leading zero, stays
- * intact). No trimming, no case normalization: reject, do not guess.
+ * Render "XXXX-XXXXXX": exactly four and six uppercase alphanumeric
+ * characters, separated by one hyphen. No trimming or case normalization.
  */
 export function formatPaymentCode(prefix: string, code: string): string {
   if (typeof prefix !== "string" || !PAYMENT_CODE_PREFIX_PATTERN.test(prefix)) {
     throw new Error(INVALID_PAYMENT_CODE_PREFIX);
   }
-  if (!isSixDigitCode(code)) {
+  if (!isCode(code)) {
     throw new Error(INVALID_PAYMENT_CODE_BODY);
   }
   return `${prefix}-${code}`;
@@ -305,8 +299,8 @@ export function formatPaymentCode(prefix: string, code: string): string {
 
 /**
  * Strictly parse a presented payment code. Accepts ONLY the exact shape
- * "PREFIX-123456" produced by formatPaymentCode — one hyphen, 4..12 ASCII
- * uppercase A-Z/0-9 prefix characters, exactly six decimal digits, no
+ * "XXXX-XXXXXX" produced by formatPaymentCode — one hyphen, four ASCII
+ * uppercase A-Z/0-9 prefix characters, six alphanumeric code characters, no
  * surrounding or internal whitespace, no lowercase, no extra separators or
  * trailing content. Returns undefined (not an error) for anything else, so
  * endpoint callers can treat parse failure uniformly as client error.
