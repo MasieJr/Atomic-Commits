@@ -11,6 +11,7 @@ const { app, authConfigured, close, reconcilePayments } = createApp({
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
   dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
+  publicBaseUrl: process.env.PUBLIC_BASE_URL,
 });
 
 if (require.main === module) {

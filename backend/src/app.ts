@@ -14,7 +14,9 @@ import { createTotpDevicesRouter } from "./routes/totp-devices";
 import { createDataEncryptionFromEnv, parseEncryptionKey, type DataEncryption } from "./services/data-encryption";
 import { createGrantAuthorityStore } from "./services/grant-authority-store";
 import { createOfflineRedemptionService, type OfflineRedemptionService } from "./services/offline-redemption";
+import { createPaymentGrantApprovalService } from "./services/payment-grant-approval";
 import { createPaymentGrantService } from "./services/payment-grants";
+import { logEvent, type LogEvent } from "./services/log";
 import { createOpenPaymentsRedemptionProvider } from "./services/open-payments-redemption-provider";
 import type { RedemptionProvider } from "./services/redemption-provider";
 import { createTotpEnrollmentService } from "./services/totp-enrollment";
@@ -30,6 +32,9 @@ interface AppOptions {
   redemptionProvider?: RedemptionProvider;
   confirmTimeoutMs?: number;
   confirmPollMs?: number;
+  /* public https base URL of this API, used as the wallet's redirect target */
+  publicBaseUrl?: string;
+  log?: LogEvent;
 }
 
 /* register the express app */
@@ -79,7 +84,7 @@ export function createApp(options: AppOptions = {}) {
       res.setHeader("Cache-Control", "no-store");
       next();
     });
-    for (const path of ["/api/offline-redemptions", "/api/payments", "/api/payment-grants"]) {
+    for (const path of ["/api/offline-redemptions", "/api/payments", "/api/payment-grants", "/api/open-payments"]) {
       app.use(path, (_req, res, next) => {
         res.setHeader("Cache-Control", "no-store");
         next();
@@ -99,11 +104,20 @@ export function createApp(options: AppOptions = {}) {
         dataKey: parseEncryptionKey(options.dataEncryptionKey),
         confirmTimeoutMs: options.confirmTimeoutMs,
         confirmPollMs: options.confirmPollMs,
+        log: options.log ?? logEvent,
       });
       const grants = createPaymentGrantService({ pool, authorities, provider });
+      const approvals = createPaymentGrantApprovalService({
+        pool,
+        encryption,
+        authorities,
+        provider,
+        publicBaseUrl: options.publicBaseUrl,
+        log: options.log ?? logEvent,
+      });
       app.use(
         "/api",
-        createPaymentsRouter(createPaymentsController(redemptions), createPaymentGrantsController(grants), tokens),
+        createPaymentsRouter(createPaymentsController(redemptions), createPaymentGrantsController(grants, approvals), tokens),
       );
     } else {
       for (const path of ["/api/devices", "/api/offline-redemptions", "/api/payments", "/api/payment-grants"]) {

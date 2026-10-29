@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { test, type TestContext } from 'node:test';
 
@@ -36,6 +36,11 @@ class FakeProvider implements RedemptionProvider {
   reads = 0;
   rotations = 0;
   cancels = 0;
+  completedIncoming: string[] = [];
+  /* server-side approval script */
+  grantStarts: { finishUri: string; clientNonce: string; debitLimit: Money }[] = [];
+  grantFinishes = 0;
+  finishBehaviour: 'ok' | 'fail' | 'small' = 'ok';
   /* what findOutgoingByQuote reports: 'found' = provider did create it */
   lookup: 'found' | 'missing' | 'error' = 'missing';
   private n = 0;
@@ -67,6 +72,31 @@ class FakeProvider implements RedemptionProvider {
   async cancelGrant() {
     this.cancels += 1;
   }
+  async completeIncoming(args: { incomingPaymentId: string }) {
+    this.completedIncoming.push(args.incomingPaymentId);
+  }
+  async lookupWallet(address: string) {
+    if (address.includes('missing')) throw new Error('no such wallet');
+    return { id: 'https://ilp.interledger-test.dev/payer', assetCode: 'EUR', assetScale: 2, authServer: 'https://auth.interledger-test.dev/' };
+  }
+  async startOutgoingGrant(args: { finishUri: string; clientNonce: string; debitLimit: Money }) {
+    this.grantStarts.push(args);
+    return {
+      redirectUrl: 'https://auth.interledger-test.dev/interact/abc',
+      providerNonce: 'provider-nonce-123',
+      grantRequestUrl: 'https://auth.interledger-test.dev/',
+      continuation: { uri: 'https://auth.interledger-test.dev/continue/abc', accessToken: 'cont-1' },
+    };
+  }
+  async finishOutgoingGrant(args: { requestedDebit: Money }) {
+    this.grantFinishes += 1;
+    if (this.finishBehaviour === 'fail') throw new ProviderUnknownError('nope');
+    return {
+      authority: { accessToken: 'approved-token', manageUrl: 'https://auth.interledger-test.dev/manage/x', expiresAtEpochMs: Date.now() + 600_000 },
+      continuation: { uri: 'https://auth.interledger-test.dev/continue/final', accessToken: 'cont-final' },
+      grantedDebit: this.finishBehaviour === 'small' ? { ...args.requestedDebit, value: '100' } : args.requestedDebit,
+    };
+  }
   async rotateAuthority(): Promise<OutgoingAuthority> {
     this.rotations += 1;
     if (this.rotateBehaviour === 'reject') throw new ProviderRejectedError('no');
@@ -85,6 +115,8 @@ async function fixture(t: TestContext) {
     redemptionProvider: provider,
     confirmTimeoutMs: 0,
     confirmPollMs: 1,
+    publicBaseUrl: 'https://api.example.test',
+    log: () => {},
   });
   const server = app.listen(0, '127.0.0.1');
   const pool = new Pool({ connectionString: databaseUrl });
@@ -168,7 +200,7 @@ async function fixture(t: TestContext) {
       json: { credentialType: 'totp-v1', paymentCode, merchantReceive: receive },
     });
 
-  return { call, pool, provider, register, payerWithDevice, merchant, redeem, reconcilePayments };
+  return { call, pool, provider, register, payerWithDevice, merchant, redeem, reconcilePayments, base };
 }
 
 test('happy path: merchant redeems an offline code, provider confirms, spend is recorded', { skip }, async (t) => {
@@ -308,6 +340,8 @@ test('a quote above the per-payment limit is rejected before any submit and free
   assert.equal(body.status, 'REJECTED');
   assert.equal(body.errorCode, 'QUOTE_EXCEEDS_LIMIT');
   assert.equal(f.provider.submits.length, 0);
+  /* the merchant's unpaid incoming payment is closed instead of left to expire */
+  assert.equal(f.provider.completedIncoming.length, 1);
   const held = await f.pool.query(
     "SELECT count(*)::int AS n FROM app_private.spending_reservations WHERE grant_id = $1 AND state IN ('RESERVED','HELD_UNKNOWN')",
     [payer.grantId],
@@ -586,4 +620,120 @@ test('crash recovery: a process that died mid-submit leaves no double debit', { 
   );
   assert.deepEqual(held.rows.map((r) => r.state), ['RELEASED']);
   assert.equal(f.provider.submits.length, 1);
+});
+
+/* ---------- server-side grant approval ---------- */
+
+function gnapHash(clientNonce: string, providerNonce: string, interactRef: string, grantUrl: string): string {
+  return createHash('sha256').update([clientNonce, providerNonce, interactRef, grantUrl].join('\n'), 'ascii').digest('base64');
+}
+
+async function startApproval(f: Awaited<ReturnType<typeof fixture>>, token: string, body: unknown = { walletAddress: '$ilp.interledger-test.dev/payer' }) {
+  const res = await f.call('/api/payment-grants', { method: 'POST', token, json: body });
+  return res;
+}
+
+test('server-side approval: start, verified callback, grant stored and usable for enrollment', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  const res = await startApproval(f, payer.token, { walletAddress: '$ilp.interledger-test.dev/payer', cumulativeCap: '20000', perPaymentMaxDebit: '1000' });
+  assert.equal(res.status, 202);
+  const started = (await res.json()) as { approvalId: string; authorizationUrl: string; status: string; cumulativeCap: Money };
+  assert.equal(started.status, 'AWAITING_APPROVAL');
+  assert.equal(started.authorizationUrl, 'https://auth.interledger-test.dev/interact/abc');
+  assert.deepEqual(started.cumulativeCap, EUR('20000'));
+  const { finishUri, clientNonce } = f.provider.grantStarts[0];
+  assert.equal(finishUri, `https://api.example.test/api/open-payments/callback/${started.approvalId}`);
+
+  /* nonces/continuation are not stored in plaintext */
+  const stored = await f.pool.query('SELECT secrets_ciphertext FROM app_private.provider_interactions WHERE id = $1', [started.approvalId]);
+  assert.equal((stored.rows[0].secrets_ciphertext as Buffer).includes(Buffer.from(clientNonce)), false);
+
+  const hash = gnapHash(clientNonce, 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/');
+  const cb = await fetch(`${f.base}/api/open-payments/callback/${started.approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(hash)}`);
+  assert.equal(cb.status, 200);
+  assert.equal(cb.headers.get('cache-control'), 'no-store');
+  assert.match(await cb.text(), /Approved/);
+
+  const status = (await (await f.call(`/api/payment-grants/approvals/${started.approvalId}`, { token: payer.token })).json()) as {
+    status: string; authorizationId: string;
+  };
+  assert.equal(status.status, 'APPROVED');
+  const grant = (await (await f.call(`/api/payment-grants/${status.authorizationId}`, { token: payer.token })).json()) as {
+    status: string; authoritySource: string; perPaymentMaxDebit: Money;
+  };
+  assert.equal(grant.status, 'ACTIVE');
+  assert.equal(grant.authoritySource, 'PROVIDER');
+  assert.deepEqual(grant.perPaymentMaxDebit, EUR('1000'));
+
+  /* and the device can be enrolled against it */
+  const enroll = await f.call('/api/devices/totp/enroll', {
+    method: 'POST', token: payer.token, json: { authorizationId: status.authorizationId, deviceName: 'Phone' },
+  });
+  assert.equal(enroll.status, 201);
+
+  /* replaying the callback does nothing */
+  const again = await fetch(`${f.base}/api/open-payments/callback/${started.approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(hash)}`);
+  assert.equal(again.status, 409);
+  assert.equal(f.provider.grantFinishes, 1);
+});
+
+test('a forged or garbled callback is rejected and does not consume the pending approval', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  const { approvalId } = (await (await startApproval(f, payer.token)).json()) as { approvalId: string };
+  const { clientNonce } = f.provider.grantStarts[0];
+
+  for (const qs of ['', '?interact_ref=ref-1', `?interact_ref=ref-1&hash=${encodeURIComponent(gnapHash('wrong', 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/'))}`]) {
+    const res = await fetch(`${f.base}/api/open-payments/callback/${approvalId}${qs}`);
+    assert.equal(res.status, 400);
+  }
+  assert.equal(f.provider.grantFinishes, 0);
+  const ok = await fetch(`${f.base}/api/open-payments/callback/${approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(gnapHash(clientNonce, 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/'))}`);
+  assert.equal(ok.status, 200);
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${randomUUID()}`)).status, 404);
+});
+
+test('payer refusal, expiry, provider failure and an undersized grant never create a usable grant', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  const status = async (id: string) =>
+    ((await (await f.call(`/api/payment-grants/approvals/${id}`, { token: payer.token })).json()) as { status: string; errorCode?: string });
+  const okHash = (n: number) => gnapHash(f.provider.grantStarts[n].clientNonce, 'provider-nonce-123', 'r', 'https://auth.interledger-test.dev/');
+
+  const denied = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${denied}?result=grant_rejected`)).status, 400);
+  assert.equal((await status(denied)).status, 'DENIED');
+
+  const expired = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  await f.pool.query("UPDATE app_private.provider_interactions SET expires_at = now() - interval '1 second' WHERE id = $1", [expired]);
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${expired}?interact_ref=r&hash=${encodeURIComponent(okHash(1))}`)).status, 410);
+  assert.equal((await status(expired)).status, 'EXPIRED');
+
+  f.provider.finishBehaviour = 'fail';
+  const failed = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${failed}?interact_ref=r&hash=${encodeURIComponent(okHash(2))}`)).status, 502);
+  assert.equal((await status(failed)).status, 'FAILED');
+
+  f.provider.finishBehaviour = 'small';
+  const small = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${small}?interact_ref=r&hash=${encodeURIComponent(okHash(3))}`)).status, 502);
+  assert.equal((await status(small)).errorCode, 'GRANT_TOO_SMALL');
+
+  const grants = (await (await f.call('/api/payment-grants', { token: payer.token })).json()) as { grants: unknown[] };
+  assert.equal(grants.grants.length, 0);
+  assert.ok(f.provider.cancels >= 3, 'abandoned grants are cancelled at the provider');
+});
+
+test('approvals are private and inputs are validated', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  const other = await f.register();
+  assert.equal((await f.call('/api/payment-grants', { method: 'POST', json: { walletAddress: 'x' } })).status, 401);
+  for (const body of [{}, { walletAddress: '' }, { walletAddress: '$w', cumulativeCap: 500 }, { walletAddress: '$w', cumulativeCap: '100', perPaymentMaxDebit: '200' }, { walletAddress: '$w', cumulativeCap: '9999999' }]) {
+    assert.equal((await startApproval(f, payer.token, body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await startApproval(f, payer.token, { walletAddress: '$ilp.interledger-test.dev/missing' })).status, 422);
+  const { approvalId } = (await (await startApproval(f, payer.token)).json()) as { approvalId: string };
+  assert.equal((await f.call(`/api/payment-grants/approvals/${approvalId}`, { token: other.token })).status, 404);
 });

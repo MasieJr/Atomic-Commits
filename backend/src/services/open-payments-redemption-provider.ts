@@ -1,12 +1,15 @@
 import {
   isFinalizedGrantWithAccessToken,
+  isPendingGrant,
   OpenPaymentsClientError,
   type AuthenticatedClient,
   type WalletAddress,
 } from "@interledger/open-payments";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { testWalletUrl } from "./grant-interaction";
 import { createOpenPaymentsClient, lookupWalletAddresses } from "./open-payments";
+import { validateReturnedOutgoingGrant } from "./outgoing-grant-validation";
 import {
   parseMinor,
   ProviderRejectedError,
@@ -17,6 +20,7 @@ import {
   type PreparedQuote,
   type ProviderOutcome,
   type RedemptionProvider,
+  type WalletInfo,
 } from "./redemption-provider";
 
 /*
@@ -52,9 +56,36 @@ function money(amount: { value: string; assetCode: string; assetScale: number })
   return { value: amount.value, assetCode: amount.assetCode, assetScale: amount.assetScale };
 }
 
+const TRANSIENT_RETRY_DELAY_MS = 1_000;
+const GRANT_FINISH_DEADLINE_MS = 20_000;
+
+/*
+ * One retry for calls with NO money effect (incoming payment, quote, resource
+ * grants): a network drop costs nothing to retry. Never used for submitting
+ * an outgoing payment.
+ */
+async function retryOnce<T>(work: () => Promise<T>, retryDelayMs: number): Promise<T> {
+  try {
+    return await work();
+  } catch (error) {
+    if (isDefinitiveRejection(error)) throw error;
+    await delay(retryDelayMs);
+    return work();
+  }
+}
+
+export interface OpenPaymentsProviderOptions {
+  /* injectable for tests; default looks wallets up on the network */
+  lookupWallets?: (addresses: string[]) => Promise<WalletAddress[]>;
+  retryDelayMs?: number;
+}
+
 export function createOpenPaymentsRedemptionProvider(
   createClient: () => Promise<AuthenticatedClient> = createOpenPaymentsClient,
+  providerOptions: OpenPaymentsProviderOptions = {},
 ): RedemptionProvider {
+  const lookupWallets = providerOptions.lookupWallets ?? lookupWalletAddresses;
+  const retryDelayMs = providerOptions.retryDelayMs ?? TRANSIENT_RETRY_DELAY_MS;
   /* created on first use, so the API can start before Open Payments is configured */
   let clientPromise: Promise<AuthenticatedClient> | undefined;
   const sdk = () => (clientPromise ??= createClient().catch((error) => {
@@ -67,7 +98,7 @@ export function createOpenPaymentsRedemptionProvider(
   async function wallet(address: string): Promise<WalletAddress> {
     const cached = wallets.get(address);
     if (cached) return cached;
-    const [found] = await lookupWalletAddresses([address]);
+    const [found] = await retryOnce(() => lookupWallets([address]), retryDelayMs);
     testWalletUrl(found.id);
     testWalletUrl(found.authServer);
     testWalletUrl(found.resourceServer);
@@ -81,7 +112,7 @@ export function createOpenPaymentsRedemptionProvider(
     const cached = resourceTokens.get(cacheKey);
     if (cached && cached.expiresAt > Date.now() + RESOURCE_TOKEN_MARGIN_MS) return cached.value;
     const requestedAt = Date.now();
-    const grant = await (await sdk()).grant.request(
+    const grant = await retryOnce(async () => (await sdk()).grant.request(
       { url: authServer },
       {
         access_token: {
@@ -91,7 +122,7 @@ export function createOpenPaymentsRedemptionProvider(
               : [{ type: "quote", actions: ["create", "read"] }],
         },
       },
-    );
+    ), retryDelayMs);
     if (!isFinalizedGrantWithAccessToken(grant)) {
       throw new Error("The resource grant unexpectedly requires interaction.");
     }
@@ -104,13 +135,93 @@ export function createOpenPaymentsRedemptionProvider(
     return grant.access_token.value;
   }
 
+  async function closeIncoming(incomingPaymentId: string, merchant: WalletAddress): Promise<void> {
+    await (await sdk()).incomingPayment.complete({
+      url: testWalletUrl(incomingPaymentId),
+      accessToken: await resourceToken(merchant.authServer, "incoming-payment"),
+    });
+  }
+
+  function walletInfo(found: WalletAddress): WalletInfo {
+    return { id: found.id, assetCode: found.assetCode, assetScale: found.assetScale, authServer: found.authServer };
+  }
+
   return {
+    async lookupWallet(address) {
+      return walletInfo(await wallet(address));
+    },
+
+    async completeIncoming({ incomingPaymentId, merchantWalletAddress }) {
+      await closeIncoming(incomingPaymentId, await wallet(merchantWalletAddress));
+    },
+
+    async startOutgoingGrant({ wallet: payer, debitLimit, finishUri, clientNonce }) {
+      const grantRequestUrl = testWalletUrl(payer.authServer);
+      const pending = await retryOnce(async () => (await sdk()).grant.request({ url: grantRequestUrl }, {
+        access_token: {
+          access: [{
+            type: "outgoing-payment",
+            actions: ["create", "read"],
+            identifier: payer.id,
+            limits: { debitAmount: debitLimit },
+          }],
+        },
+        interact: { start: ["redirect"], finish: { method: "redirect", uri: finishUri, nonce: clientNonce } },
+      }), retryDelayMs);
+      if (!isPendingGrant(pending) || !pending.interact.finish) {
+        /* consent must be explicit: a grant that skips interaction is refused */
+        await (await sdk()).grant.cancel({
+          url: testWalletUrl(pending.continue.uri),
+          accessToken: pending.continue.access_token.value,
+        }).catch(() => {});
+        throw new Error("The provider did not ask the payer for explicit approval.");
+      }
+      return {
+        redirectUrl: testWalletUrl(pending.interact.redirect),
+        providerNonce: pending.interact.finish,
+        grantRequestUrl,
+        continuation: { uri: testWalletUrl(pending.continue.uri), accessToken: pending.continue.access_token.value },
+      };
+    },
+
+    async finishOutgoingGrant({ continuation, interactRef, wallet: payer, requestedDebit }) {
+      const client = await sdk();
+      const deadline = Date.now() + GRANT_FINISH_DEADLINE_MS;
+      let current = continuation;
+      let first = true;
+      while (Date.now() < deadline) {
+        const requestedAt = Date.now();
+        /* only the first continuation carries the interaction ref */
+        const result = await client.grant.continue(
+          { url: testWalletUrl(current.uri), accessToken: current.accessToken },
+          first ? { interact_ref: interactRef } : undefined,
+        );
+        first = false;
+        if (isFinalizedGrantWithAccessToken(result)) {
+          /* trust what the provider granted, not what we asked for */
+          const returned = validateReturnedOutgoingGrant(result, { payerId: payer.id, requestedDebit });
+          return {
+            authority: {
+              accessToken: result.access_token.value,
+              manageUrl: result.access_token.manage,
+              expiresAtEpochMs: requestedAt + returned.expiresInSeconds * 1000,
+            },
+            continuation: { uri: testWalletUrl(result.continue.uri), accessToken: result.continue.access_token.value },
+            grantedDebit: money(returned.budget),
+          };
+        }
+        current = { uri: result.continue.uri, accessToken: result.continue.access_token.value };
+        await delay(Math.max(1, result.continue.wait ?? 1) * 1000);
+      }
+      throw new ProviderUnknownError("The provider did not finalize the grant in time.");
+    },
+
     async prepareQuote({ payerWalletAddress, merchantWalletAddress, merchantReceive, reference }): Promise<PreparedQuote> {
       const [payer, merchant] = await Promise.all([wallet(payerWalletAddress), wallet(merchantWalletAddress)]);
       if (payer.id === merchant.id) throw new Error("Payer and merchant wallets must differ.");
       if (!sameAsset(merchantReceive, merchant)) throw new Error("merchantReceive must use the merchant wallet's asset.");
 
-      const incoming = await (await sdk()).incomingPayment.create(
+      const incoming = await retryOnce(async () => (await sdk()).incomingPayment.create(
         { url: merchant.resourceServer, accessToken: await resourceToken(merchant.authServer, "incoming-payment") },
         {
           walletAddress: merchant.id,
@@ -118,14 +229,21 @@ export function createOpenPaymentsRedemptionProvider(
           expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           metadata: { description: "Atomic Commits offline payment", reference },
         },
-      );
+      ), retryDelayMs);
       testWalletUrl(incoming.id);
       if (incoming.walletAddress !== merchant.id) throw new Error("Incoming payment created for the wrong wallet.");
 
-      const quote = await (await sdk()).quote.create(
-        { url: payer.resourceServer, accessToken: await resourceToken(payer.authServer, "quote") },
-        { walletAddress: payer.id, receiver: incoming.id, method: "ilp" },
-      );
+      let quote;
+      try {
+        quote = await retryOnce(async () => (await sdk()).quote.create(
+          { url: payer.resourceServer, accessToken: await resourceToken(payer.authServer, "quote") },
+          { walletAddress: payer.id, receiver: incoming.id, method: "ilp" },
+        ), retryDelayMs);
+      } catch (error) {
+        /* no quote = nothing will be paid: close the merchant's request so it doesn't linger */
+        await closeIncoming(incoming.id, merchant).catch(() => {});
+        throw error;
+      }
       testWalletUrl(quote.id);
       if (
         quote.walletAddress !== payer.id ||

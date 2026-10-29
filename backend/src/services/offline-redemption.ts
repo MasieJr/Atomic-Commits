@@ -5,6 +5,7 @@ import { parsePaymentCode, verifyTotp } from "../domain/payment-engine/totp";
 import { ApiError } from "../errors/api-error";
 import type { DataEncryption } from "./data-encryption";
 import type { GrantAuthorityStore } from "./grant-authority-store";
+import { silentLog, type LogEvent } from "./log";
 import {
   isMoney,
   parseMinor,
@@ -75,6 +76,7 @@ export interface OfflineRedemptionOptions {
   /** how long to wait for provider confirmation before answering PROCESSING */
   readonly confirmTimeoutMs?: number;
   readonly confirmPollMs?: number;
+  readonly log?: LogEvent;
 }
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -177,6 +179,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   const now = options.now ?? Date.now;
   const confirmTimeoutMs = options.confirmTimeoutMs ?? 15_000;
   const confirmPollMs = options.confirmPollMs ?? 1_000;
+  const log = options.log ?? silentLog;
   const digestKey = Buffer.from(hkdfSync("sha256", options.dataKey, Buffer.alloc(0), "totp-code-replay-guard", 32));
 
   async function inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -217,6 +220,28 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
 
   /* ends the attempt without debiting: reservation released, claim released */
   async function finishWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string) {
+    await releaseWithoutDebit(attemptId, status, errorCode);
+    log("payment.ended_without_debit", { paymentId: attemptId, status, errorCode });
+    /* close the merchant's unpaid incoming payment so it doesn't linger as EXPIRED (best effort) */
+    try {
+      const { rows } = await pool.query(
+        `SELECT a.provider_incoming_ref, m.receiving_wallet_address
+           FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id
+          WHERE a.id = $1 AND a.status IN ('FAILED', 'REJECTED')`,
+        [attemptId],
+      );
+      if (rows[0]?.provider_incoming_ref) {
+        await provider.completeIncoming({
+          incomingPaymentId: rows[0].provider_incoming_ref,
+          merchantWalletAddress: rows[0].receiving_wallet_address,
+        });
+      }
+    } catch {
+      log("payment.incoming_close_failed", { paymentId: attemptId });
+    }
+  }
+
+  async function releaseWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string) {
     await inTransaction(async (db) => {
       await db.query(
         `UPDATE app_private.payment_attempts SET status = $2, error_code = $3, updated_at = now()
@@ -237,6 +262,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   }
 
   async function markUnknown(attemptId: string) {
+    log("payment.unknown", { paymentId: attemptId });
     await inTransaction(async (db) => {
       await db.query(
         `UPDATE app_private.payment_attempts SET status = 'UNKNOWN', updated_at = now()
@@ -268,6 +294,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         [attemptId, parseMinor(sent.value)?.toString() ?? null, parseMinor(received.value)?.toString() ?? null],
       );
       if (!rows[0]) return; /* already finalized by someone else */
+      log("payment.succeeded", { paymentId: attemptId });
       await db.query(
         `UPDATE app_private.spending_reservations r SET state = 'COMMITTED', updated_at = now()
            FROM app_private.totp_code_claims c
@@ -577,6 +604,12 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       await finishWithoutDebit(attemptId, "FAILED", "QUOTE_FAILED");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
+    /* remember the provider refs first, so a rejected quote's incoming payment can be closed */
+    await pool.query(
+      `UPDATE app_private.payment_attempts SET provider_incoming_ref = $2, provider_quote_ref = $3, updated_at = now()
+        WHERE id = $1`,
+      [attemptId, quote.incomingPaymentId, quote.quoteId],
+    );
     const debit = parseMinor(quote.debit.value);
     if (
       debit === undefined ||
