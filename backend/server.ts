@@ -7,7 +7,7 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be a valid TCP port');
 }
 
-const { app, authConfigured, close, reconcilePayments } = createApp({
+const { app, authConfigured, close, reconcilePayments, reconcileRevocations } = createApp({
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
   dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
@@ -23,13 +23,19 @@ if (require.main === module) {
   });
 
   /* crash recovery: settle payments left unresolved by a previous run, then keep checking.
-     read-only towards the provider; it never re-submits a payment */
+     read-only towards the provider; it never re-submits a payment. Revoked grants whose
+     provider cancellation is still open are retried after the payments pass */
   const reconcile = () => {
     void Promise.resolve(reconcilePayments())
       .then((result) => {
         if (result && result.checked > 0) console.log(`Reconciled ${result.checked} unresolved payment(s).`);
       })
-      .catch(() => console.error('Payment reconciliation pass failed; will retry.'));
+      .catch(() => console.error('Payment reconciliation pass failed; will retry.'))
+      .then(() => reconcileRevocations())
+      .then((result) => {
+        if (result && result.checked > 0) console.log(`Retried provider cancellation for ${result.checked} revoked grant(s).`);
+      })
+      .catch(() => console.error('Grant revocation pass failed; will retry.'));
   };
   reconcile();
   const reconcileTimer = setInterval(reconcile, 60_000);

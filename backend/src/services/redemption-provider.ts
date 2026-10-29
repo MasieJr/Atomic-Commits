@@ -35,9 +35,37 @@ export type ProviderOutcome =
   | { readonly kind: "PENDING" };
 
 /** The provider definitely refused (4xx, not a timeout): nothing was debited. */
-export class ProviderRejectedError extends Error {}
+export class ProviderRejectedError extends Error {
+  constructor(
+    message: string,
+    /* bare status for logs only; never the provider's text */
+    readonly httpStatus?: number,
+  ) {
+    super(message);
+  }
+}
+/** Closed, data-free classification of an unclear provider failure; never provider text. */
+export type ProviderErrorKind =
+  | "HTTP_5XX"
+  | "HTTP_408"
+  | "HTTP_4XX_VALIDATION"
+  | "RESPONSE_VALIDATION"
+  | "NETWORK"
+  | "URL_NOT_ALLOWED"
+  | "OTHER";
+export interface ProviderErrorDetail {
+  readonly errorKind: ProviderErrorKind;
+  readonly httpStatus?: number;
+}
 /** We cannot tell what happened (timeout, 5xx, bad response): treat as UNKNOWN. */
-export class ProviderUnknownError extends Error {}
+export class ProviderUnknownError extends Error {
+  constructor(
+    message: string,
+    readonly detail?: ProviderErrorDetail,
+  ) {
+    super(message);
+  }
+}
 
 export interface RedemptionProvider {
   /** Create a fresh incoming payment at the merchant and a quote from the payer. */

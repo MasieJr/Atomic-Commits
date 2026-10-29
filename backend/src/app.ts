@@ -15,7 +15,7 @@ import { createDataEncryptionFromEnv, parseEncryptionKey, type DataEncryption } 
 import { createGrantAuthorityStore } from "./services/grant-authority-store";
 import { createOfflineRedemptionService, type OfflineRedemptionService } from "./services/offline-redemption";
 import { createPaymentGrantApprovalService } from "./services/payment-grant-approval";
-import { createPaymentGrantService } from "./services/payment-grants";
+import { createPaymentGrantService, type PaymentGrantService } from "./services/payment-grants";
 import { logEvent, type LogEvent } from "./services/log";
 import { createOpenPaymentsRedemptionProvider } from "./services/open-payments-redemption-provider";
 import type { RedemptionProvider } from "./services/redemption-provider";
@@ -63,6 +63,7 @@ export function createApp(options: AppOptions = {}) {
   /* make pool if configged, then wire the jwt auth routes */
   /* set when payments are configured; used for crash recovery at startup */
   let redemptions: OfflineRedemptionService | undefined;
+  let grants: PaymentGrantService | undefined;
   const pool = configured
     ? createDatabasePool(options.databaseUrl!)
     : undefined;
@@ -106,7 +107,7 @@ export function createApp(options: AppOptions = {}) {
         confirmPollMs: options.confirmPollMs,
         log: options.log ?? logEvent,
       });
-      const grants = createPaymentGrantService({ pool, authorities, provider });
+      grants = createPaymentGrantService({ pool, authorities, provider, log: options.log ?? logEvent });
       const approvals = createPaymentGrantApprovalService({
         pool,
         encryption,
@@ -147,6 +148,8 @@ export function createApp(options: AppOptions = {}) {
     authConfigured: configured,
     /* one crash-recovery pass; resolves to undefined when payments are off */
     reconcilePayments: () => redemptions?.reconcilePending(),
+    /* retries provider cancellation of locally revoked grants; undefined when payments are off */
+    reconcileRevocations: () => grants?.retryPendingRevocations(),
     async close(): Promise<void> {
       await pool?.end();
     },

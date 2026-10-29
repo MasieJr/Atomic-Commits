@@ -2,7 +2,8 @@ import type { Pool } from "pg";
 
 import { ApiError } from "../errors/api-error";
 import type { GrantAuthorityStore } from "./grant-authority-store";
-import { ProviderRejectedError, type Money, type RedemptionProvider } from "./redemption-provider";
+import { silentLog, type LogEvent } from "./log";
+import { ProviderRejectedError, ProviderUnknownError, type Money, type RedemptionProvider } from "./redemption-provider";
 
 /*
  * Payer-facing view and revocation of spending grants.
@@ -65,8 +66,10 @@ export function createPaymentGrantService(options: {
   pool: Pool;
   authorities: GrantAuthorityStore;
   provider: RedemptionProvider;
+  log?: LogEvent;
 }) {
   const { pool, authorities, provider } = options;
+  const log = options.log ?? silentLog;
 
   async function getGrant(userId: number, grantId: unknown): Promise<GrantView> {
     if (typeof grantId !== "string" || !UUID_PATTERN.test(grantId)) throw new ApiError(404, "Grant not found.", "NOT_FOUND");
@@ -123,35 +126,62 @@ export function createPaymentGrantService(options: {
               EXISTS (SELECT 1 FROM app_private.payment_attempts a
                        WHERE a.grant_id = g.id
                          AND a.status IN ('AWAITING_AUTHORIZATION', 'SUBMITTING', 'PROCESSING', 'UNKNOWN')) AS unresolved
-         FROM app_private.payment_grants g WHERE g.id = $1`,
+         FROM app_private.payment_grants g WHERE g.id = $1 AND g.status = 'REVOKED'`,
       [grantId],
     );
     const row = rows[0];
     if (!row || !["PENDING", "FAILED", "DEFERRED_UNRESOLVED_PAYMENTS"].includes(row.provider_revocation)) return;
-    const setState = (state: string) =>
-      pool.query("UPDATE app_private.payment_grants SET provider_revocation = $2, updated_at = now() WHERE id = $1", [
+    /* fixed reason codes only: never provider text or credentials */
+    const finish = async (outcome: string, reason: string, extra: { errorKind?: string; httpStatus?: number } = {}) => {
+      await pool.query("UPDATE app_private.payment_grants SET provider_revocation = $2, updated_at = now() WHERE id = $1", [
         grantId,
-        state,
+        outcome,
       ]);
+      log("grant.revocation.result", { authorizationId: grantId, outcome, reason, ...extra });
+    };
     if (row.unresolved) {
-      await setState("DEFERRED_UNRESOLVED_PAYMENTS");
+      await finish("DEFERRED_UNRESOLVED_PAYMENTS", "UNRESOLVED_PAYMENTS");
       return;
     }
     const continuation = await authorities.loadContinuation(pool, grantId);
     if (!continuation) {
-      await setState("FAILED");
+      await finish("FAILED", "NO_CONTINUATION");
       return;
     }
     try {
       await provider.cancelGrant(continuation);
-      await setState("CONFIRMED");
+      await finish("CONFIRMED", "CANCELLED");
     } catch (error) {
       /* a refusal usually means it is already gone; anything unclear can be retried */
-      await setState(error instanceof ProviderRejectedError ? "CONFIRMED" : "FAILED");
+      if (error instanceof ProviderRejectedError) {
+        await finish("CONFIRMED", "PROVIDER_REFUSED", error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus });
+      }
+      else {
+        const detail = error instanceof ProviderUnknownError ? error.detail : undefined;
+        await finish("FAILED", "UNCLEAR_OR_NETWORK", {
+          errorKind: detail?.errorKind ?? "OTHER",
+          ...(detail?.httpStatus === undefined ? {} : { httpStatus: detail.httpStatus }),
+        });
+      }
     }
   }
 
-  return { getGrant, listGrants, revokeGrant, cancelAtProvider };
+  /* background pass: retry provider cancellation for locally revoked grants only */
+  async function retryPendingRevocations(): Promise<{ checked: number }> {
+    const { rows } = await pool.query(
+      `SELECT id FROM app_private.payment_grants
+        WHERE status = 'REVOKED' AND provider_revocation IN ('PENDING', 'FAILED', 'DEFERRED_UNRESOLVED_PAYMENTS')
+        ORDER BY updated_at /* each attempt bumps it, so stuck grants can't starve newer ones */
+        LIMIT 20`,
+    );
+    for (const { id } of rows) {
+      /* one bad grant must not stop the rest; it stays retryable */
+      await cancelAtProvider(id).catch(() => {});
+    }
+    return { checked: rows.length };
+  }
+
+  return { getGrant, listGrants, revokeGrant, cancelAtProvider, retryPendingRevocations };
 }
 
 export type PaymentGrantService = ReturnType<typeof createPaymentGrantService>;

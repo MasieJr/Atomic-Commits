@@ -16,6 +16,7 @@ import {
   ProviderUnknownError,
   sameAsset,
   type Money,
+  type ProviderErrorDetail,
   type OutgoingAuthority,
   type PreparedQuote,
   type ProviderOutcome,
@@ -50,6 +51,22 @@ function isDefinitiveRejection(error: unknown): boolean {
     error.status !== 408 &&
     !error.validationErrors?.length
   );
+}
+
+/* bare status and a fixed kind only: the provider's message and description stay out */
+function unclearDetail(error: unknown): ProviderErrorDetail {
+  if (error instanceof OpenPaymentsClientError) {
+    const httpStatus = error.status;
+    if (httpStatus === undefined) return { errorKind: error.validationErrors?.length ? "RESPONSE_VALIDATION" : "NETWORK" };
+    if (httpStatus >= 500) return { errorKind: "HTTP_5XX", httpStatus };
+    if (httpStatus === 408) return { errorKind: "HTTP_408", httpStatus };
+    if (httpStatus >= 400 && error.validationErrors?.length) return { errorKind: "HTTP_4XX_VALIDATION", httpStatus };
+    if (error.validationErrors?.length) return { errorKind: "RESPONSE_VALIDATION", httpStatus };
+    return { errorKind: "OTHER", httpStatus };
+  }
+  /* undici reports connection failures as TypeError("fetch failed") */
+  if (error instanceof TypeError) return { errorKind: "NETWORK" };
+  return { errorKind: "OTHER" };
 }
 
 function money(amount: { value: string; assetCode: string; assetScale: number }): Money {
@@ -331,11 +348,19 @@ export function createOpenPaymentsRedemptionProvider(
     },
 
     async cancelGrant(continuation) {
+      let url: string;
       try {
-        await (await sdk()).grant.cancel({ url: testWalletUrl(continuation.uri), accessToken: continuation.accessToken });
+        url = testWalletUrl(continuation.uri);
+      } catch {
+        throw new ProviderUnknownError("The cancellation outcome is unknown.", { errorKind: "URL_NOT_ALLOWED" });
+      }
+      try {
+        await (await sdk()).grant.cancel({ url, accessToken: continuation.accessToken });
       } catch (error) {
-        if (isDefinitiveRejection(error)) throw new ProviderRejectedError("The provider refused the cancellation.");
-        throw new ProviderUnknownError("The cancellation outcome is unknown.");
+        if (isDefinitiveRejection(error)) {
+          throw new ProviderRejectedError("The provider refused the cancellation.", (error as OpenPaymentsClientError).status);
+        }
+        throw new ProviderUnknownError("The cancellation outcome is unknown.", unclearDetail(error));
       }
     },
 
