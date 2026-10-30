@@ -152,9 +152,12 @@ export function createPaymentGrantService(options: {
       await provider.cancelGrant(continuation);
       await finish("CONFIRMED", "CANCELLED");
     } catch (error) {
-      /* a refusal usually means it is already gone; anything unclear can be retried */
+      /* only 404/410 prove the grant is gone; any other refusal (401, 403, 400, no status)
+         leaves it possibly live at the provider, so it stays FAILED and the background pass retries */
       if (error instanceof ProviderRejectedError) {
-        await finish("CONFIRMED", "PROVIDER_REFUSED", error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus });
+        const status = error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus };
+        if (error.httpStatus === 404 || error.httpStatus === 410) await finish("CONFIRMED", "ALREADY_GONE", status);
+        else await finish("FAILED", "PROVIDER_REFUSED", status);
       }
       else {
         const detail = error instanceof ProviderUnknownError ? error.detail : undefined;

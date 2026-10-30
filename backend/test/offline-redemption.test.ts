@@ -37,6 +37,8 @@ class FakeProvider implements RedemptionProvider {
   rotations = 0;
   cancels = 0;
   cancelBehaviour: 'ok' | 'reject' | 'unknown' = 'ok';
+  /* the HTTP status a refused cancel carries, like the real adapter */
+  cancelRejectStatus: number | undefined = 404;
   cancelledUris: string[] = [];
   completedIncoming: string[] = [];
   /* server-side approval script */
@@ -74,7 +76,7 @@ class FakeProvider implements RedemptionProvider {
   async cancelGrant(continuation: { uri: string }) {
     this.cancels += 1;
     this.cancelledUris.push(continuation.uri);
-    if (this.cancelBehaviour === 'reject') throw new ProviderRejectedError('gone');
+    if (this.cancelBehaviour === 'reject') throw new ProviderRejectedError('refused', this.cancelRejectStatus);
     if (this.cancelBehaviour === 'unknown') throw new ProviderUnknownError('timeout');
   }
   async completeIncoming(args: { incomingPaymentId: string }) {
@@ -113,6 +115,7 @@ class FakeProvider implements RedemptionProvider {
 async function fixture(t: TestContext) {
   const keyB64 = randomBytes(32).toString('base64');
   const provider = new FakeProvider();
+  const logs: Record<string, unknown>[] = [];
   const { app, close, reconcilePayments, reconcileRevocations } = createApp({
     databaseUrl,
     jwtSecret: randomBytes(32).toString('hex'),
@@ -121,7 +124,7 @@ async function fixture(t: TestContext) {
     confirmTimeoutMs: 0,
     confirmPollMs: 1,
     publicBaseUrl: 'https://api.example.test',
-    log: () => {},
+    log: (event, fields) => logs.push({ event, ...fields }),
   });
   const server = app.listen(0, '127.0.0.1');
   const pool = new Pool({ connectionString: databaseUrl });
@@ -205,7 +208,7 @@ async function fixture(t: TestContext) {
       json: { credentialType: 'totp-v1', paymentCode, merchantReceive: receive },
     });
 
-  return { call, pool, provider, store, register, payerWithDevice, merchant, redeem, reconcilePayments, reconcileRevocations, base };
+  return { call, pool, provider, store, logs, register, payerWithDevice, merchant, redeem, reconcilePayments, reconcileRevocations, base };
 }
 
 test('happy path: merchant redeems an offline code, provider confirms, spend is recorded', { skip }, async (t) => {
@@ -600,6 +603,61 @@ test('an unclear provider cancellation stays FAILED and the background pass conf
   /* settled grants are left alone by later passes */
   await f.reconcileRevocations();
   assert.equal(cancelsOfThisGrant(), 2);
+});
+
+test('a cancel refused with 404 means the grant is already gone: CONFIRMED, not retried', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-gone' });
+  f.provider.cancelBehaviour = 'reject';
+  f.provider.cancelRejectStatus = 404;
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'CONFIRMED');
+  const line = f.logs.find((l) => l.event === 'grant.revocation.result' && l.authorizationId === payer.grantId);
+  assert.equal(line?.outcome, 'CONFIRMED');
+  assert.equal(line?.httpStatus, 404);
+
+  await f.reconcileRevocations();
+  assert.equal(f.provider.cancelledUris.filter((u) => u === uri).length, 1);
+});
+
+test('a cancel refused with 401 is not proof the grant is gone: FAILED and retried', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-refused' });
+  const cancelsOfThisGrant = () => f.provider.cancelledUris.filter((u) => u === uri).length;
+  f.provider.cancelBehaviour = 'reject';
+  f.provider.cancelRejectStatus = 401;
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'FAILED');
+  const line = f.logs.find((l) => l.event === 'grant.revocation.result' && l.authorizationId === payer.grantId);
+  assert.equal(line?.outcome, 'FAILED');
+  assert.equal(line?.reason, 'PROVIDER_REFUSED');
+  assert.equal(line?.httpStatus, 401);
+
+  /* still refused: the background pass keeps it FAILED */
+  await f.reconcileRevocations();
+  assert.equal(cancelsOfThisGrant(), 2);
+  const { rows } = await f.pool.query('SELECT provider_revocation FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(rows[0].provider_revocation, 'FAILED');
+
+  f.provider.cancelBehaviour = 'ok';
+  await f.reconcileRevocations();
+  const view = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { token: payer.token })).json()) as {
+    providerRevocation: string;
+  };
+  assert.equal(view.providerRevocation, 'CONFIRMED');
+  assert.equal(cancelsOfThisGrant(), 3);
 });
 
 test('the background revocation pass never cancels a grant that is not revoked', { skip }, async (t) => {
