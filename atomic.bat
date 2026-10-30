@@ -6,8 +6,6 @@ where node >nul 2>&1
 if errorlevel 1 goto missing_node
 if not exist "%ATOMIC_CLI%" goto missing_build
 if not "%~1"=="" goto command_line
-node "%ATOMIC_CLI%" setup >nul
-if errorlevel 1 goto setup_failed
 
 :menu
 cls
@@ -17,12 +15,14 @@ echo ========================================
 echo.
 echo  1. Show payment code
 echo  2. Check device status and JSON location
-echo  3. Exit
+echo  3. Connect to the API
+echo  4. Exit
 echo.
-echo A merchant backend must register this device to redeem its codes.
+echo Connect while online before using your code offline.
 echo.
-choice /c 123 /n /m "Choose [1-3]: "
-if errorlevel 3 goto quit
+choice /c 1234 /n /m "Choose [1-4]: "
+if errorlevel 4 goto quit
+if errorlevel 3 goto connect
 if errorlevel 2 goto status
 if errorlevel 1 goto pay
 goto quit
@@ -48,27 +48,21 @@ echo.
 node "%ATOMIC_CLI%" status
 goto return_to_menu
 
+:connect
+cls
+echo ========== API enrollment ==========
+echo.
+node "%ATOMIC_CLI%" connect
+goto return_to_menu
+
 :return_to_menu
 echo.
 pause
 goto menu
 
 :command_line
-if /i "%~1"=="pay" goto setup_command_line
-if /i "%~1"=="status" goto setup_command_line
 node "%ATOMIC_CLI%" %*
 exit /b %errorlevel%
-
-:setup_command_line
-node "%ATOMIC_CLI%" setup >nul
-if errorlevel 1 exit /b 1
-node "%ATOMIC_CLI%" %*
-exit /b %errorlevel%
-
-:setup_failed
-echo Local device setup failed. Check the error above before continuing.
-pause
-exit /b 1
 
 :missing_node
 echo Node.js 20 or newer was not found. Install it while online and try again.

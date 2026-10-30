@@ -83,6 +83,18 @@ export type DeviceProfile = {
   readonly revoked: false;
 };
 
+/** The packet currently returned by the server's TOTP enrollment endpoint. */
+export type ApiDeviceProfile = {
+  readonly version: 1;
+  readonly prefix: string;
+  readonly secret: string;
+  readonly algorithm: "SHA1";
+  readonly digits: 6;
+  readonly periodSeconds: 30;
+  readonly expiresAtEpochMs: number;
+  readonly revoked: false;
+};
+
 /** Allowed packet keys, in canonical storage order. */
 const PACKET_FIELDS = [
   "version",
@@ -116,7 +128,7 @@ export class AtomicStoreError extends Error {}
 
 /** Data-free failure messages (never echo packet content or the secret). */
 const MISSING_PROFILE =
-  "No local device profile is enrolled. Run 'atomic enroll --file <packet path>' first.";
+  "No local device profile is enrolled. Run 'atomic connect' while online first.";
 const PROFILE_NOT_A_FILE = "The local device profile is not a regular file.";
 const MALFORMED_PROFILE = "The local device profile is corrupt or has unsupported fields.";
 const PROFILE_REVOKED = "The local device profile is marked revoked.";
@@ -197,7 +209,7 @@ function readProtectedProfile(home: string): string {
 }
 
 /** Fail-closed usability: rejects locally known revoked or expired profiles. */
-export function assertProfileUsable(profile: DeviceProfile, nowEpochMs: number): void {
+export function assertProfileUsable(profile: Pick<DeviceProfile, "revoked" | "expiresAtEpochMs">, nowEpochMs: number): void {
   if (profile.revoked !== false) {
     throw new AtomicStoreError(PROFILE_REVOKED);
   }
@@ -207,7 +219,7 @@ export function assertProfileUsable(profile: DeviceProfile, nowEpochMs: number):
 }
 
 /** True when the profile's locally stored expiry instant has passed. */
-export function isProfileExpired(profile: DeviceProfile, nowEpochMs: number): boolean {
+export function isProfileExpired(profile: Pick<DeviceProfile, "expiresAtEpochMs">, nowEpochMs: number): boolean {
   return profile.expiresAtEpochMs <= nowEpochMs;
 }
 
@@ -227,6 +239,43 @@ export function parseEnrollmentPacket(text: string, nowEpochMs: number): DeviceP
     throw new AtomicStoreError(PACKET_EXPIRED);
   }
   return profile;
+}
+
+/** Validate the exact, one-time packet returned by the current API. */
+export function parseApiEnrollmentPacket(text: string, nowEpochMs: number): ApiDeviceProfile {
+  const profile = validateApiDeviceProfile(strictJsonParse(text));
+  assertProfileUsable(profile, nowEpochMs);
+  return profile;
+}
+
+function validateApiDeviceProfile(value: unknown): ApiDeviceProfile {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new AtomicStoreError(MALFORMED_PROFILE);
+  }
+  const packet = value as Record<string, unknown>;
+  const keys = Object.keys(packet);
+  if (keys.length !== LEGACY_PACKET_FIELDS.length || LEGACY_PACKET_FIELDS.some((field) => !keys.includes(field))) {
+    throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
+  }
+  if (packet.version !== 1) throw new AtomicStoreError(UNSUPPORTED_VERSION);
+  if (typeof packet.prefix !== "string" || !LEGACY_PREFIX_PATTERN.test(packet.prefix) ||
+      !isValidTotpSecret(packet.secret, MIN_SECRET_BYTES) || packet.algorithm !== "SHA1" ||
+      packet.digits !== 6 || packet.periodSeconds !== 30 ||
+      typeof packet.expiresAtEpochMs !== "number" || !Number.isSafeInteger(packet.expiresAtEpochMs) ||
+      packet.expiresAtEpochMs < 0 || !Number.isFinite(new Date(packet.expiresAtEpochMs).getTime())) {
+    throw new AtomicStoreError(UNSUPPORTED_PARAMETERS);
+  }
+  if (packet.revoked !== false) throw new AtomicStoreError(PROFILE_REVOKED);
+  return {
+    version: 1, prefix: packet.prefix, secret: packet.secret as string,
+    algorithm: "SHA1", digits: 6, periodSeconds: 30,
+    expiresAtEpochMs: packet.expiresAtEpochMs, revoked: false,
+  };
+}
+
+/** Read an API-issued profile with the same owner-only protection as local profiles. */
+export function loadApiDeviceProfile(home: string): ApiDeviceProfile {
+  return validateApiDeviceProfile(strictJsonParse(readProtectedProfile(home)));
 }
 
 /**
@@ -380,6 +429,11 @@ export function deviceProfilePath(home: string): string {
  *   4. protect the file (chmod/ACL), deleting it on protection failure.
  */
 export function saveDeviceProfile(home: string, profile: DeviceProfile): { profilePath: string } {
+  return saveSerializedProfile(home, serializeProfile(profile));
+}
+
+/** Prepare and protect the destination before requesting a one-time API secret. */
+export function prepareApiDeviceSlot(home: string): void {
   const profilePath = deviceProfilePath(home);
   prepareDeviceDir(home);
   protectDirectory(home);
@@ -392,8 +446,18 @@ export function saveDeviceProfile(home: string, profile: DeviceProfile): { profi
   if (existing !== undefined) {
     throw new AtomicStoreError(ALREADY_ENROLLED);
   }
+}
+
+export function saveApiDeviceProfile(home: string, profile: ApiDeviceProfile): { profilePath: string } {
+  const validated = validateApiDeviceProfile(profile);
+  return saveSerializedProfile(home, `${JSON.stringify(validated, null, 2)}\n`);
+}
+
+function saveSerializedProfile(home: string, contents: string): { profilePath: string } {
+  const profilePath = deviceProfilePath(home);
+  prepareApiDeviceSlot(home);
   try {
-    writeFileSync(profilePath, serializeProfile(profile), { mode: 0o600, flag: "wx" });
+    writeFileSync(profilePath, contents, { mode: 0o600, flag: "wx" });
   } catch {
     throw new AtomicStoreError(PROFILE_NOT_WRITTEN);
   }
@@ -737,4 +801,15 @@ export function resolveDeviceHome(env: Record<string, string | undefined> = proc
     ? env.XDG_DATA_HOME
     : path.join(homedir(), ".local", "share");
   return path.join(dataRoot, "atomic-commits", "device");
+}
+
+/** API enrollment uses a separate directory so existing local-demo profiles are preserved. */
+export function resolveApiDeviceHome(env: Record<string, string | undefined> = process.env): string {
+  const override = env.ATOMIC_API_DEVICE_HOME;
+  if (override !== undefined && override.trim().length > 0) {
+    if (!path.isAbsolute(override)) throw new AtomicStoreError(PATH_OVERRIDE_INVALID);
+    return path.resolve(override);
+  }
+  const localHome = resolveDeviceHome(env);
+  return env.ATOMIC_DEVICE_HOME?.trim() ? `${localHome}-api` : path.join(path.dirname(localHome), "api-device");
 }

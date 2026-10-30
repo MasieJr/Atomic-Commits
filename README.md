@@ -21,10 +21,10 @@ Hackathon work in progress.
 
 ## Offline payer CLI (Test Wallet demo)
 
-The payer can create a protected local device profile automatically, or import
-a previously coordinated profile, and then generate a short-lived code with no
-network connection. The CLI does not connect to the provider, check the wallet
-balance, or verify the current grant.
+While online, the payer logs in and enrolls the device through the backend API.
+The CLI saves the one-time server-issued profile locally, and then generates a
+short-lived code without a network connection. It does not check the wallet
+balance or verify the current grant while offline.
 A displayed code is a credential, not a payment or receipt. Synchronize the
 device clock before disconnecting; the merchant and backend remain online.
 
@@ -35,10 +35,22 @@ npm ci
 npm run build
 # Install the atomic.cmd launcher in your npm global bin directory on Windows:
 npm link
-atomic setup
+atomic connect
 atomic status
 atomic pay
 ```
+
+`atomic connect` prompts for the API URL if `--api-url` and `ATOMIC_API_URL`
+are absent, then asks for the payer's email and password. The password is not
+echoed and the login token is not persisted. The API URL must use HTTPS, except
+that HTTP is allowed for localhost development. If there is more than one active
+provider grant, choose the payer wallet from the displayed list.
+
+The CLI enrolls against an **existing** active provider grant. The newer backend
+grant-approval API is not yet integrated into `atomic connect`. If no approved
+grant is available, enrollment stops and reports that prerequisite. No packet
+file needs to be copied. If a one-time enrollment response is lost, check and
+revoke the server device before attempting enrollment again.
 
 If the launcher is not on `PATH`, add the npm global prefix directory (printed
 by `npm config get prefix`) to `PATH`, or use `npm run atomic -- pay` from
@@ -47,22 +59,35 @@ by `npm config get prefix`) to `PATH`, or use `npm run atomic -- pay` from
 ### Windows batch launcher
 
 After the one-time `npm ci` and `npm run build` above, double-click
-`atomic.bat` in the repository root. On first run it creates a random device
-secret, a public prefix, and a protected local JSON profile automatically.
-Its menu shows the profile location and displays a payment code. On the payment
+`atomic.bat` in the repository root. Choose **Connect to the API** while
+online, then use the menu to show a payment code or the local profile location. On the payment
 screen, press **R** to refresh or **M** to return to the menu. Codes use fixed
 30-second clock steps, so the time remaining when a code first appears can be
 less than 30 seconds; the displayed expiry is when it stops being current on
 the device.
-The launcher and `pay` work offline once the CLI is built; they do not install
-packages or contact a server. **Local setup does not register the device with
-the merchant backend or activate a provider grant.** Those online steps must
-still happen before a merchant can redeem its codes.
+The launcher and `pay` work offline once enrollment is complete. The merchant
+and backend remain online for redemption.
 
 From a terminal, `atomic.bat` also accepts the CLI commands directly, for
-example `atomic.bat pay` or `atomic.bat enroll --file "C:\path\packet.json"`.
+example `atomic.bat pay` or `atomic.bat connect`.
 
-### Local JSON profile and backend registration
+### API enrollment contract
+
+The CLI calls `POST /api/auth/login`, `GET /api/payment-grants` and
+`POST /api/devices/totp/enroll`. The current backend returns a version-1 packet
+with a four-to-twelve-character prefix, a Base32 secret, `algorithm: "SHA1"`,
+`digits: 6`, `periodSeconds: 30`, an expiry and a revocation flag. It generates
+standard six-decimal-digit RFC 6238 codes; the CLI uses the same format for this
+profile. The merchant submits the code to `POST /api/offline-redemptions` and
+can check the result with `GET /api/payments/:id`.
+
+API profiles live separately under `%APPDATA%\atomic-commits\api-device` on
+Windows, or `${XDG_DATA_HOME:-~/.local/share}/atomic-commits/api-device` on
+POSIX. `ATOMIC_API_DEVICE_HOME` can override that directory with an absolute
+path. The same owner-only protection and no-overwrite rules apply. A saved
+profile's local status cannot report a later remote revocation while offline.
+
+### Legacy local-only demo profile
 
 `atomic setup` creates the JSON below if no profile exists. Its secret has
 160 random bits, its four-character prefix is randomly generated, and its local expiry is
@@ -73,11 +98,11 @@ profile is upgraded to version 2 with the same secret and expiry; its old
 prefix is shortened to its first four characters. The backend must register
 the new prefix and format before redemption.
 
-For a real redemption, the backend must register **this same prefix and secret**
-over a trusted channel before the payer disconnects. The backend must enforce
-prefix uniqueness and reject a collision; random generation alone cannot
-guarantee it. The backend enrollment API is not implemented here, so coordinate
-the secure transfer and registration with Josh. The JSON has exactly these fields:
+This older local-only profile is not registered by `atomic setup` and is not
+compatible with the current API's decimal TOTP. `atomic pay` requires API
+enrollment by default; the old demo can be explicitly enabled with
+`ATOMIC_ALLOW_LOCAL_DEMO=1`. Use `atomic connect` for API enrollment. The legacy
+JSON has exactly these fields:
 
 ```json
 {
@@ -113,7 +138,7 @@ not a keychain or hardware enclave; the same user account can read the secret.
 Re-enrollment refuses to overwrite an existing profile: remove the old profile
 explicitly only when it is safe to replace it.
 
-### Backend integration contract
+### Legacy alphanumeric code contract
 
 `backend/src/domain/payment-engine/totp.ts` exports:
 

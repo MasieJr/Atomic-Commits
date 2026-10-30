@@ -222,6 +222,13 @@ export function generateTotp(secret: string, atEpochMs: number): TotpGeneration 
   };
 }
 
+/** RFC 6238 decimal presentation used by the current API branch. */
+export function generateDecimalTotp(secret: string, atEpochMs: number): TotpGeneration {
+  const generated = generateTotp(secret, atEpochMs);
+  const truncated = Number.parseInt(generated.code, 36);
+  return { ...generated, code: String(truncated % 1_000_000).padStart(6, "0") };
+}
+
 /**
  * Verify a presented six-character code against the secret at `atEpochMs`,
  * accepting the drift window given by `allowedDriftSteps`
