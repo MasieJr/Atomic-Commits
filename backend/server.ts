@@ -46,6 +46,10 @@ if (require.main === module) {
     server.close(() => {
       void close().catch(() => { process.exitCode = 1; });
     });
+    /* idle keep-alive sockets (e.g. an open docs tab) would otherwise hold close() open forever */
+    server.closeIdleConnections();
+    /* backstop: a redemption can wait up to 15 s for provider confirmation, so give in-flight requests 25 s */
+    setTimeout(() => process.exit(), 25_000).unref();
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
