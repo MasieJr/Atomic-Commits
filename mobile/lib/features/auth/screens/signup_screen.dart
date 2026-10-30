@@ -1,8 +1,11 @@
+import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/core/widgets/auth/art.dart';
+import 'package:atomic_commits/core/widgets/auth/header.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../../../app/router.dart';
+import 'package:atomic_commits/app/router.dart';
 
 /// Sign-up screen. Pure UI mock: no backend, no credential storage, no
 /// account creation. Matches the signup.html art direction (paper gradient,
@@ -68,9 +71,6 @@ class _SignupScreenState extends State<SignupScreen> {
     _confirmFocus.dispose();
     super.dispose();
   }
-
-  double _sized(double width, double fraction, double min, double max) =>
-      (width * fraction).clamp(min, max).toDouble();
 
   // --- Validation ---------------------------------------------------------
 
@@ -172,10 +172,10 @@ class _SignupScreenState extends State<SignupScreen> {
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle.dark.copyWith(
         statusBarColor: Colors.transparent,
-        systemNavigationBarColor: SignupScreen._paperBottom,
+        systemNavigationBarColor: AppColours.paperBottom,
       ),
       child: Scaffold(
-        backgroundColor: SignupScreen._paperTop,
+        backgroundColor: AppColours.paperTop,
         body: Stack(
           fit: StackFit.expand,
           children: [
@@ -185,9 +185,9 @@ class _SignupScreenState extends State<SignupScreen> {
                   begin: Alignment.topLeft,
                   end: Alignment.bottomRight,
                   colors: [
-                    SignupScreen._paperTop,
-                    SignupScreen._paperMid,
-                    SignupScreen._paperBottom,
+                    AppColours.paperTop,
+                    AppColours.paperMid,
+                    AppColours.paperBottom,
                   ],
                   stops: [0, 0.65, 1],
                 ),
@@ -216,9 +216,9 @@ class _SignupScreenState extends State<SignupScreen> {
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: [
                                 _buildTopline(width),
-                                _buildArt(),
+                                Art(),
                                 const SizedBox(height: 16),
-                                _buildHeader(width),
+                                Header(width: width),
                                 const SizedBox(height: 16),
                                 _buildField(
                                   width: width,
@@ -307,7 +307,7 @@ class _SignupScreenState extends State<SignupScreen> {
                                   'Pay by code. Carry on.',
                                   textAlign: TextAlign.center,
                                   style: const TextStyle(
-                                    color: SignupScreen._footnote,
+                                    color: AppColours.footnote,
                                     fontSize: 12,
                                     height: 1.45,
                                   ),
@@ -328,141 +328,6 @@ class _SignupScreenState extends State<SignupScreen> {
     );
   }
 
-  Widget _buildTopline(double width) {
-    final backSize = _sized(width, 0.032, 10, 13);
-    final tagSize = _sized(width, 0.0245, 9, 10);
-
-    return Wrap(
-      alignment: WrapAlignment.spaceBetween,
-      crossAxisAlignment: WrapCrossAlignment.center,
-      spacing: 12,
-      runSpacing: 4,
-      children: [
-        TextButton.icon(
-          onPressed: _goBack,
-          style: TextButton.styleFrom(
-            foregroundColor: SignupScreen._topline,
-            minimumSize: const Size(64, 48),
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-            textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
-              fontSize: backSize,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.05 * backSize,
-            ),
-          ),
-          icon: const Icon(Icons.arrow_back, size: 16),
-          label: const Text('BACK'),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(vertical: 12),
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 7,
-                height: 7,
-                decoration: const BoxDecoration(
-                  color: SignupScreen._orange,
-                  shape: BoxShape.circle,
-                  boxShadow: [
-                    BoxShadow(color: Color(0x30FF9B58), spreadRadius: 4),
-                  ],
-                ),
-              ),
-              const SizedBox(width: 7),
-              Flexible(
-                child: Text(
-                  'ATOMIC COMMITS',
-                  style: TextStyle(
-                    color: SignupScreen._tagline,
-                    fontSize: tagSize,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 0.13 * tagSize,
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildArt() {
-    return AspectRatio(
-      aspectRatio: 16 / 9,
-      child: Image.asset(
-        'assets/images/atomic-payment-banner.png',
-        fit: BoxFit.contain,
-        semanticLabel: 'Atomic Commits',
-      ),
-    );
-  }
-
-  Widget _buildHeader(double width) {
-    final headingSize = _sized(width, 0.076, 25, 32);
-    final subSize = _sized(width, 0.0325, 11, 13);
-    final eyebrowSize = _sized(width, 0.027, 9, 11);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Row(
-          children: [
-            Container(
-              width: 20,
-              height: 3,
-              decoration: BoxDecoration(
-                color: SignupScreen._orange,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(width: 9),
-            Flexible(
-              child: Text(
-                'EVERYDAY PAYMENTS',
-                style: TextStyle(
-                  color: SignupScreen._eyebrow,
-                  fontSize: eyebrowSize,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.18 * eyebrowSize,
-                ),
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 10),
-        Text.rich(
-          TextSpan(
-            text: 'Join the ',
-            children: [
-              TextSpan(
-                text: 'colony.',
-                style: const TextStyle(color: SignupScreen._orange),
-              ),
-            ],
-          ),
-          style: TextStyle(
-            color: SignupScreen._ink,
-            fontSize: headingSize,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.058 * headingSize,
-            height: 1.04,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Gwinya for now. Bread for home. Airtime for later.',
-          style: TextStyle(
-            color: SignupScreen._subtle,
-            fontSize: subSize,
-            height: 1.55,
-          ),
-        ),
-      ],
-    );
-  }
-
   Widget _buildSubmitButton(double width, BuildContext context) {
     final buttonFontSize = _sized(width, 0.037, 13, 15);
     final buttonTextStyle = Theme.of(context).textTheme.labelLarge
@@ -471,7 +336,7 @@ class _SignupScreenState extends State<SignupScreen> {
     return ElevatedButton(
       onPressed: _submit,
       style: ElevatedButton.styleFrom(
-        backgroundColor: SignupScreen._cobalt,
+        backgroundColor: AppColours.cobalt,
         foregroundColor: Colors.white,
         minimumSize: const Size.fromHeight(52),
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
@@ -495,7 +360,7 @@ class _SignupScreenState extends State<SignupScreen> {
         Text(
           'Already with us?',
           style: TextStyle(
-            color: SignupScreen._secondary,
+            color: AppColours.secondary,
             fontSize: secondarySize,
             height: 1.6,
           ),
@@ -503,7 +368,7 @@ class _SignupScreenState extends State<SignupScreen> {
         TextButton(
           onPressed: _showLoginPlaceholder,
           style: TextButton.styleFrom(
-            foregroundColor: SignupScreen._cobalt,
+            foregroundColor: AppColours.cobalt,
             minimumSize: const Size(64, 48),
             padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
             textStyle: Theme.of(context).textTheme.labelLarge?.copyWith(
@@ -548,7 +413,7 @@ class _SignupScreenState extends State<SignupScreen> {
             child: Text(
               label,
               style: TextStyle(
-                color: SignupScreen._labelInk,
+                color: AppColours.labelInk,
                 fontSize: labelSize,
                 fontWeight: FontWeight.w700,
                 letterSpacing: 0.012 * labelSize,
@@ -571,18 +436,18 @@ class _SignupScreenState extends State<SignupScreen> {
             textInputAction: textInputAction,
             autofillHints: autofillHints,
             style: TextStyle(
-              color: SignupScreen._fieldText,
+              color: AppColours.fieldText,
               fontSize: inputSize,
               fontWeight: FontWeight.w500,
             ),
             decoration: InputDecoration(
               hintText: hint,
               hintStyle: const TextStyle(
-                color: SignupScreen._fieldHint,
+                color: AppColours.fieldHint,
                 fontWeight: FontWeight.w400,
               ),
               errorStyle: const TextStyle(
-                color: SignupScreen._error,
+                color: AppColours.error,
                 fontSize: 11,
                 height: 1.3,
               ),
@@ -593,35 +458,35 @@ class _SignupScreenState extends State<SignupScreen> {
               ),
               border: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(13),
-                borderSide: const BorderSide(color: SignupScreen._fieldBorder),
+                borderSide: const BorderSide(color: AppColours.fieldBorder),
               ),
               enabledBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(13),
-                borderSide: const BorderSide(color: SignupScreen._fieldBorder),
+                borderSide: const BorderSide(color: AppColours.fieldBorder),
               ),
               focusedBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(13),
                 borderSide: const BorderSide(
-                  color: SignupScreen._fieldFocus,
+                  color: AppColours.fieldFocus,
                   width: 1.5,
                 ),
               ),
               errorBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(13),
-                borderSide: const BorderSide(color: SignupScreen._error),
+                borderSide: const BorderSide(color: AppColours.error),
               ),
               focusedErrorBorder: OutlineInputBorder(
                 borderRadius: BorderRadius.circular(13),
                 borderSide: const BorderSide(
-                  color: SignupScreen._error,
+                  color: AppColours.error,
                   width: 1.5,
                 ),
               ),
               filled: true,
-              fillColor: SignupScreen._fieldFill,
+              fillColor: AppColours.fieldFill,
               prefixIcon: Padding(
                 padding: const EdgeInsets.only(left: 14, right: 10),
-                child: Icon(icon, size: 18, color: SignupScreen._fieldIcon),
+                child: Icon(icon, size: 18, color: AppColours.fieldIcon),
               ),
               prefixIconConstraints: const BoxConstraints(
                 minHeight: 48,
@@ -641,7 +506,7 @@ class _SignupScreenState extends State<SignupScreen> {
                             ? Icons.visibility_outlined
                             : Icons.visibility_off_outlined,
                         size: 20,
-                        color: SignupScreen._eyeIcon,
+                        color: AppColours.eyeIcon,
                       ),
                     )
                   : null,
