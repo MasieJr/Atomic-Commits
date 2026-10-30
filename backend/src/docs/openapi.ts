@@ -374,7 +374,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
           tags: ["Payments"],
           summary: "Merchant redeems an offline code (one code = one payment)",
           description:
-            "Merchant accounts only. Send a unique `Idempotency-Key` per purchase: retrying with the same key and body returns the original payment (200) and never pays twice. A code is valid only in its own 30-second window.",
+            "Merchant accounts only. Send a unique `Idempotency-Key` per purchase: retrying with the same key and body returns the original payment (200) and never pays twice. A code is accepted during its own 30-second window and the adjacent ones (about 60-90 s in total), and only once.",
           security: bearer,
           parameters: [
             {

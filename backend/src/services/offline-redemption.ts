@@ -77,6 +77,8 @@ export interface OfflineRedemptionOptions {
   readonly confirmTimeoutMs?: number;
   readonly confirmPollMs?: number;
   readonly log?: LogEvent;
+  /** 0 = code's own 30 s window only, 1 = also the adjacent windows (default) */
+  readonly allowedDriftSteps?: 0 | 1;
 }
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -87,7 +89,16 @@ const REPLAY_GUARD_MINUTES = 10;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 /** a SUBMITTING row older than this is treated as UNKNOWN (process died mid-call) */
 const STALE_SUBMITTING_MS = 2 * 60_000;
-const ALLOWED_DRIFT_STEPS = 0;
+/*
+ * Accept the code's own 30 s window plus one window either side, so a code
+ * shown near the end of its window still works while the merchant types it.
+ * Safe because every accepted code is claimed once per (device, time step)
+ * AND by a keyed digest over a 10-minute window, whatever step it matched.
+ * Set TOTP_ALLOWED_DRIFT_STEPS=0 for the strict single-window behaviour.
+ */
+const DEFAULT_ALLOWED_DRIFT_STEPS = 1;
+/* a ROTATING grant older than this was left by a process that died mid-rotation */
+const STUCK_ROTATION_MS = 2 * 60_000;
 
 /* one generic answer for unknown prefix, wrong code, expired or revoked device */
 const codeInvalid = () => new ApiError(422, "This payment code is invalid or expired.", "CODE_INVALID");
@@ -180,6 +191,8 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   const confirmTimeoutMs = options.confirmTimeoutMs ?? 15_000;
   const confirmPollMs = options.confirmPollMs ?? 1_000;
   const log = options.log ?? silentLog;
+  const allowedDriftSteps = options.allowedDriftSteps ?? DEFAULT_ALLOWED_DRIFT_STEPS;
+  if (allowedDriftSteps !== 0 && allowedDriftSteps !== 1) throw new Error("allowedDriftSteps must be 0 or 1.");
   const digestKey = Buffer.from(hkdfSync("sha256", options.dataKey, Buffer.alloc(0), "totp-code-replay-guard", 32));
 
   async function inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -330,22 +343,52 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       [grantId],
     );
     if (!lock.rows[0]) throw new ApiError(503, "The payer's authority is being refreshed. Try again shortly.", "GRANT_BUSY");
+    let rotated: OutgoingAuthority;
     try {
-      const rotated = await provider.rotateAuthority(current);
-      await inTransaction(async (db) => {
-        await authorities.saveAuthority(db, grantId, rotated);
-        await db.query("UPDATE app_private.payment_grants SET status = 'ACTIVE', updated_at = now() WHERE id = $1", [
-          grantId,
-        ]);
-      });
-      return rotated;
+      rotated = await provider.rotateAuthority(current);
     } catch (error) {
       const next = error instanceof ProviderRejectedError ? "REAUTHORIZATION_REQUIRED" : "BLOCKED";
-      await pool.query("UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1", [
-        grantId,
-        next,
-      ]);
+      /* only from ROTATING: a revocation that happened meanwhile wins */
+      await pool.query(
+        "UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1 AND status = 'ROTATING'",
+        [grantId, next],
+      );
+      log("grant.rotation_failed", { authorizationId: grantId, next });
       throw new ApiError(409, "The payer's authority could not be refreshed.", "GRANT_NOT_SPENDABLE");
+    }
+    /* the old token may already be dead, so the new one is always saved */
+    const stillRotating = await inTransaction(async (db) => {
+      await authorities.saveAuthority(db, grantId, rotated);
+      const back = await db.query(
+        "UPDATE app_private.payment_grants SET status = 'ACTIVE', updated_at = now() WHERE id = $1 AND status = 'ROTATING' RETURNING id",
+        [grantId],
+      );
+      return Boolean(back.rows[0]);
+    });
+    if (!stillRotating) {
+      /* revoked (or blocked) while we were rotating: never spend with it */
+      throw new ApiError(409, "The payer's approval changed while it was being refreshed.", "GRANT_NOT_SPENDABLE");
+    }
+    return rotated;
+  }
+
+  /*
+   * Token for READ-ONLY provider calls. Access tokens live ~10 minutes, so a
+   * payment confirmed later needs a rotated one. Rotation only happens for an
+   * ACTIVE grant; otherwise the stored token is tried as is.
+   */
+  async function readAuthority(grantId: string): Promise<OutgoingAuthority | undefined> {
+    const current = await authorities.loadAuthority(pool, grantId);
+    if (!current) return undefined;
+    if (current.expiresAtEpochMs === undefined || current.expiresAtEpochMs > now() + TOKEN_REFRESH_MARGIN_MS) {
+      return current;
+    }
+    const { rows } = await pool.query("SELECT status FROM app_private.payment_grants WHERE id = $1", [grantId]);
+    if (rows[0]?.status !== "ACTIVE") return current;
+    try {
+      return await freshAuthority(grantId);
+    } catch {
+      return (await authorities.loadAuthority(pool, grantId)) ?? current;
     }
   }
 
@@ -367,7 +410,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       if (row.status !== "UNKNOWN" || !row.provider_quote_ref) return;
       let found;
       try {
-        const authority = await authorities.loadAuthority(pool, row.grant_id);
+        const authority = await readAuthority(row.grant_id);
         if (!authority) return;
         found = await provider.findOutgoingByQuote({
           payerWalletAddress: row.payer_wallet_address,
@@ -393,7 +436,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     do {
       let outcome;
       try {
-        const authority = await authorities.loadAuthority(pool, row.grant_id);
+        const authority = await readAuthority(row.grant_id);
         if (!authority) return;
         outcome = await provider.readOutcome({
           outgoingPaymentId: row.provider_attempt_ref,
@@ -473,7 +516,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       { ciphertext: device.secret_ciphertext, keyVersion: device.key_version },
       deviceSecretContext(device.id),
     );
-    const verification = verifyTotp(secret, parsed.code, nowMs, ALLOWED_DRIFT_STEPS);
+    const verification = verifyTotp(secret, parsed.code, nowMs, allowedDriftSteps);
     if (!verification.valid) throw codeInvalid();
     const codeDigest = createHmac("sha256", digestKey).update(`${device.id}:${parsed.code}`).digest();
 
@@ -717,6 +760,14 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
    * gets one read-only provider check. Nothing is ever re-submitted.
    */
   async function reconcilePending(): Promise<{ checked: number }> {
+    /* a rotation that never finished: the old token may be dead and the new one unknown */
+    const stuck = await pool.query(
+      `UPDATE app_private.payment_grants SET status = 'BLOCKED', updated_at = now()
+        WHERE status = 'ROTATING' AND updated_at < now() - make_interval(secs => $1)
+        RETURNING id`,
+      [STUCK_ROTATION_MS / 1000],
+    );
+    for (const { id } of stuck.rows) log("grant.rotation_abandoned", { authorizationId: id });
     const { rows: stale } = await pool.query(
       `SELECT id FROM app_private.payment_attempts
         WHERE status = 'SUBMITTING' AND updated_at < now() - make_interval(secs => $1)`,

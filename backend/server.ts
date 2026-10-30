@@ -12,6 +12,7 @@ const { app, authConfigured, close, reconcilePayments, reconcileRevocations } = 
   jwtSecret: process.env.JWT_SECRET,
   dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
   publicBaseUrl: process.env.PUBLIC_BASE_URL,
+  allowedDriftSteps: process.env.TOTP_ALLOWED_DRIFT_STEPS === '0' ? 0 : 1,
 });
 
 if (require.main === module) {

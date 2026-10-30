@@ -38,6 +38,8 @@ interface AppOptions {
   /* public https base URL of this API, used as the wallet's redirect target */
   publicBaseUrl?: string;
   log?: LogEvent;
+  /* TOTP tolerance: 0 = strict 30 s window, 1 = also adjacent windows (default) */
+  allowedDriftSteps?: 0 | 1;
 }
 
 /* register the express app */
@@ -134,6 +136,7 @@ export function createApp(options: AppOptions = {}) {
         confirmTimeoutMs: options.confirmTimeoutMs,
         confirmPollMs: options.confirmPollMs,
         log: options.log ?? logEvent,
+        allowedDriftSteps: options.allowedDriftSteps,
       });
       grants = createPaymentGrantService({ pool, authorities, provider, log: options.log ?? logEvent });
       const approvals = createPaymentGrantApprovalService({
