@@ -1,5 +1,8 @@
 import express from "express";
 import helmet from "helmet";
+import swaggerUi from "swagger-ui-express";
+
+import { buildOpenApiSpec } from "./docs/openapi";
 
 import { createAuthController } from "./controllers/auth";
 import { createPaymentGrantsController } from "./controllers/payment-grants";
@@ -41,6 +44,31 @@ interface AppOptions {
 export function createApp(options: AppOptions = {}) {
   const app = express();
   app.disable("x-powered-by");
+  /*
+   * API docs (Swagger UI). Mounted before the global helmet() on purpose: its
+   * default CSP has upgrade-insecure-requests, which would make browsers load
+   * the UI's own files over https and break the page while the server runs on
+   * plain http. Same headers otherwise; scripts still only from 'self'.
+   */
+  const openApiSpec = buildOpenApiSpec(options.publicBaseUrl?.trim().replace(/\/+$/, "") || undefined);
+  const docsHelmet = helmet({
+    contentSecurityPolicy: { useDefaults: true, directives: { upgradeInsecureRequests: null } },
+    /* ignored by browsers on plain http anyway; avoids a console warning on the docs page */
+    crossOriginOpenerPolicy: false,
+  });
+  app.get("/api/openapi.json", docsHelmet, (_req, res) => {
+    res.json(openApiSpec);
+  });
+  app.use(
+    "/api/docs",
+    docsHelmet,
+    swaggerUi.serve,
+    swaggerUi.setup(openApiSpec, {
+      customSiteTitle: "Atomic Commits API",
+      swaggerOptions: { persistAuthorization: false, displayRequestDuration: true },
+    }),
+  );
+
   app.use(helmet());
   app.use(express.json({ limit: "10kb" }));
 
