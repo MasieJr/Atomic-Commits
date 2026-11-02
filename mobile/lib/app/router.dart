@@ -1,3 +1,4 @@
+import 'package:atomic_commits/features/auth/screens/login_screen.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -12,6 +13,7 @@ import '../features/welcome/screens/welcome_screen.dart';
 abstract final class AppRoutes {
   static const welcome = '/';
   static const signup = '/signup';
+  static const login = '/login';
 
   static const payer = '/payer';
   static const payerQr = '/payer/qr';
@@ -33,6 +35,11 @@ final appRouter = GoRouter(
       path: AppRoutes.signup,
       name: 'signup',
       builder: (context, state) => const SignupScreen(),
+    ),
+    GoRoute(
+      path: AppRoutes.login,
+      name: 'login',
+      builder: (context, state) => const LoginScreen(),
     ),
 
     /**

@@ -3,9 +3,15 @@ import 'package:atomic_commits/core/utils.dart';
 import 'package:flutter/material.dart';
 
 class SubmitButton extends StatelessWidget {
+  final String label;
   final double width;
   final VoidCallback submit;
-  const SubmitButton({super.key, required this.width, required this.submit});
+  const SubmitButton({
+    super.key,
+    required this.width,
+    required this.submit,
+    required this.label,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +32,7 @@ class SubmitButton extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(13)),
         textStyle: buttonTextStyle,
       ),
-      child: const Text('Create account'),
+      child: Text(label),
     );
   }
 }

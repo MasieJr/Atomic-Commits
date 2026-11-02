@@ -1,4 +1,5 @@
 import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/core/utils.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
 import 'package:atomic_commits/core/widgets/auth/header.dart';
@@ -20,6 +21,7 @@ class SignupScreen extends StatefulWidget {
 }
 
 class _SignupScreenState extends State<SignupScreen> {
+  final Utils utils = Utils();
   final _formKey = GlobalKey<FormState>();
 
   final _nameController = TextEditingController();
@@ -54,26 +56,6 @@ class _SignupScreenState extends State<SignupScreen> {
 
   // --- Validation ---------------------------------------------------------
 
-  String? _validateName(String? raw) {
-    if (raw == null || raw.trim().isEmpty) return 'Enter your full name.';
-    return null;
-  }
-
-  String? _validateEmail(String? raw) {
-    final value = raw?.trim() ?? '';
-    if (value.isEmpty) return 'Enter your email address.';
-    final pattern = RegExp(r'^[^@\s]+@[^@\s]+\.[^@\s]+$');
-    if (!pattern.hasMatch(value)) return 'Enter a valid email address.';
-    return null;
-  }
-
-  String? _validatePassword(String? raw) {
-    final value = raw ?? '';
-    if (value.isEmpty) return 'Enter a password.';
-    if (value.length < 8) return 'Use at least 8 characters.';
-    return null;
-  }
-
   String? _validateConfirm(String? raw) {
     final value = raw ?? '';
     if (value.isEmpty) return 'Confirm your password.';
@@ -84,11 +66,17 @@ class _SignupScreenState extends State<SignupScreen> {
   // --- Actions ------------------------------------------------------------
 
   List<({FocusNode node, String? Function() validate})> _fieldEntries() => [
-    (node: _nameFocus, validate: () => _validateName(_nameController.text)),
-    (node: _emailFocus, validate: () => _validateEmail(_emailController.text)),
+    (
+      node: _nameFocus,
+      validate: () => utils.validateName(_nameController.text),
+    ),
+    (
+      node: _emailFocus,
+      validate: () => utils.validateEmail(_emailController.text),
+    ),
     (
       node: _passwordFocus,
-      validate: () => _validatePassword(_passwordController.text),
+      validate: () => utils.validatePassword(_passwordController.text),
     ),
     (
       node: _confirmFocus,
@@ -197,7 +185,7 @@ class _SignupScreenState extends State<SignupScreen> {
                                   textCapitalization: TextCapitalization.words,
                                   textInputAction: TextInputAction.next,
                                   nextFocus: _emailFocus,
-                                  validator: _validateName,
+                                  validator: utils.validateName,
                                 ),
                                 const SizedBox(height: 10),
                                 CustomTextField(
@@ -212,7 +200,7 @@ class _SignupScreenState extends State<SignupScreen> {
                                   autofillHints: const [AutofillHints.email],
                                   textInputAction: TextInputAction.next,
                                   nextFocus: _passwordFocus,
-                                  validator: _validateEmail,
+                                  validator: utils.validateEmail,
                                 ),
                                 const SizedBox(height: 10),
                                 CustomTextField(
@@ -235,7 +223,7 @@ class _SignupScreenState extends State<SignupScreen> {
                                   onToggle: () => setState(
                                     () => _obscurePassword = !_obscurePassword,
                                   ),
-                                  validator: _validatePassword,
+                                  validator: utils.validatePassword,
                                 ),
                                 const SizedBox(height: 10),
                                 CustomTextField(
@@ -263,9 +251,16 @@ class _SignupScreenState extends State<SignupScreen> {
                                   validator: _validateConfirm,
                                 ),
                                 const SizedBox(height: 18),
-                                SubmitButton(width: width, submit: _submit),
+                                SubmitButton(
+                                  width: width,
+                                  submit: _submit,
+                                  label: "Create an account",
+                                ),
                                 const SizedBox(height: 14),
-                                Secondary(width: width),
+                                Secondary(
+                                  width: width,
+                                  currentMode: AuthMode.signup,
+                                ),
                                 const SizedBox(height: 12),
                                 const Text(
                                   'Pay by code. Carry on.',

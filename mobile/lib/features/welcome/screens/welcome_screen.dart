@@ -1,10 +1,9 @@
 import 'dart:math' as math;
 
+import 'package:atomic_commits/app/router.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
-
-import '../../../../app/router.dart';
 
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
@@ -121,7 +120,7 @@ class WelcomeScreen extends StatelessWidget {
                                 ),
                                 OutlinedButton(
                                   onPressed: () =>
-                                      _showNextStep(context, 'Log in'),
+                                      context.push(AppRoutes.login),
                                   style: OutlinedButton.styleFrom(
                                     backgroundColor: const Color(0xFFFFFBF5),
                                     foregroundColor: _ink,
@@ -155,12 +154,6 @@ class WelcomeScreen extends StatelessWidget {
         ),
       ),
     );
-  }
-
-  void _showNextStep(BuildContext context, String action) {
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text('$action is coming soon.')));
   }
 }
 

@@ -1,21 +1,33 @@
+import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/core/utils.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+
+enum AuthMode { login, signup }
 
 class Secondary extends StatelessWidget {
   final double width;
-  const new({super.key, required this.width});
+
+  /// The current page mode where this widget is rendered.
+  /// Defaults to [AuthMode.signup] (shows "Already with us? Log in").
+  final AuthMode currentMode;
+
+  const Secondary({
+    super.key,
+    required this.width,
+    this.currentMode = AuthMode.signup,
+  });
 
   @override
   Widget build(BuildContext context) {
-    Utils utils = Utils();
+    final utils = Utils();
     final secondarySize = utils.sized(width, 0.03, 11, 13);
 
-    void showLoginPlaceholder() {
-      ScaffoldMessenger.of(context)
-        ..hideCurrentSnackBar()
-        ..showSnackBar(const SnackBar(content: Text('Log in is coming soon.')));
-    }
+    final isSignup = currentMode == AuthMode.signup;
+    final promptText = isSignup ? 'Already with us?' : "Don't have an account?";
+    final actionText = isSignup ? 'Log in' : 'Sign up';
+    final targetRoute = isSignup ? AppRoutes.login : AppRoutes.signup;
 
     return Wrap(
       alignment: WrapAlignment.center,
@@ -23,7 +35,7 @@ class Secondary extends StatelessWidget {
       spacing: 4,
       children: [
         Text(
-          'Already with us?',
+          promptText,
           style: TextStyle(
             color: AppColours.secondary,
             fontSize: secondarySize,
@@ -31,7 +43,7 @@ class Secondary extends StatelessWidget {
           ),
         ),
         TextButton(
-          onPressed: showLoginPlaceholder,
+          onPressed: () => context.go(targetRoute),
           style: TextButton.styleFrom(
             foregroundColor: AppColours.cobalt,
             minimumSize: const Size(64, 48),
@@ -41,7 +53,7 @@ class Secondary extends StatelessWidget {
               fontWeight: FontWeight.w800,
             ),
           ),
-          child: const Text('Log in'),
+          child: Text(actionText),
         ),
       ],
     );
