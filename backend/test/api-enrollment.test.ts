@@ -7,8 +7,8 @@ import path from "node:path";
 import { test, type TestContext } from "node:test";
 
 import { enrollWithApi } from "../src/cli/api-enrollment";
-import { saveDeviceProfile } from "../src/cli/local-device-store";
-import { generateDecimalTotp } from "../src/domain/payment-engine/totp";
+import { parseApiEnrollmentPacket, saveApiDeviceProfile, saveDeviceProfile } from "../src/cli/local-device-store";
+import { generateDecimalTotp, parsePaymentCode, verifyTotp } from "../src/domain/payment-engine/totp";
 
 const secret = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // public RFC 6238 vector
 const authorizationId = "3321ed7d-9a34-4d36-98ac-2c1192cd1b17";
@@ -86,7 +86,11 @@ test("API login and one-time enrollment produce a protected profile usable by of
   assert.match(firstLine, /^ABC234-[0-9]{6}$/);
   const expiry = /Code expires at: (\S+)/.exec(result.stdout);
   assert.ok(expiry);
-  assert.equal(firstLine, `ABC234-${generateDecimalTotp(secret, Date.parse(expiry[1]) - 1).code}`);
+  const issuedAt = Date.parse(expiry[1]) - 1;
+  assert.equal(firstLine, `ABC234-${generateDecimalTotp(secret, issuedAt).code}`);
+  const parsed = parsePaymentCode(firstLine);
+  assert.ok(parsed, "the backend must accept the API-enrolled client's presentation");
+  assert.equal(verifyTotp(secret, parsed.code, issuedAt, 0).valid, true);
   assert.ok(!`${result.stdout}${result.stderr}`.includes(secret));
   assert.ok(!`${result.stdout}${result.stderr}`.includes(token));
   for (const [seconds, expected] of [
@@ -215,4 +219,21 @@ test("pay refuses an unregistered local demo profile by default", { timeout: 120
   assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stderr, /atomic connect/);
   assert.equal(result.stdout, "");
+});
+
+test("an existing version-1 device keeps working offline without being rewritten", { timeout: 120_000 }, (t) => {
+  const home = homeFor(t);
+  const apiHome = homeFor(t);
+  const profile = parseApiEnrollmentPacket(JSON.stringify(packet()), Date.now());
+  const profilePath = saveApiDeviceProfile(home, profile).profilePath;
+  const original = readFileSync(profilePath, "utf8");
+  const cli = path.resolve(__dirname, "../src/commands/atomic.ts");
+  const guard = path.resolve(__dirname, "atomic-network-guard.cjs");
+  const result = spawnSync(process.execPath, ["--require", guard, "--import", "tsx", cli, "pay"], {
+    cwd: path.resolve(__dirname, ".."), encoding: "utf8", timeout: 90_000,
+    env: { ...process.env, ATOMIC_DEVICE_HOME: home, ATOMIC_API_DEVICE_HOME: apiHome, ATOMIC_ALLOW_LOCAL_DEMO: "" },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stdout, /^ABC234-[0-9]{6}/);
+  assert.equal(readFileSync(profilePath, "utf8"), original);
 });

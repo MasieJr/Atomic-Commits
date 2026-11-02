@@ -15,7 +15,7 @@ import path from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { test, type TestContext } from 'node:test';
 
-import { generateTotp, TOTP_TIME_STEP_MS } from '../src/domain/payment-engine/totp';
+import { generateBase36Totp as generateTotp, TOTP_TIME_STEP_MS } from '../src/domain/payment-engine/totp';
 
 // Anchors: this file lives in backend/test, per the focused-test convention.
 const backendRoot = path.resolve(__dirname, '..');
@@ -313,6 +313,21 @@ test('pay refuses an unregistered local demo profile by default', { timeout: 300
   assert.equal(result.status, 1, `${result.stdout}\n${result.stderr}`);
   assert.match(result.stderr, /atomic connect/);
   assert.equal(result.stdout, '');
+});
+
+test('setup cannot change a local profile without the explicit demo opt-in', { timeout: 300_000 }, (t) => {
+  const home = randomizeFixtures('setup-opt-in');
+  t.after(() => rmSync(home, { recursive: true, force: true }));
+  assert.equal(runAtomicCli(['setup'], { home }).status, 0);
+  const profilePath = path.join(home, 'device-profile.json');
+  const original = readFileSync(profilePath, 'utf8');
+  const result = spawnSync(process.execPath, [cliPath, 'setup'], {
+    encoding: 'utf8', timeout: 120_000,
+    env: { ...process.env, ATOMIC_DEVICE_HOME: home, ATOMIC_ALLOW_LOCAL_DEMO: '' },
+  });
+  assert.equal(result.status, 1);
+  assert.match(result.stderr, /atomic connect/);
+  assert.equal(readFileSync(profilePath, 'utf8'), original);
 });
 
 test('atomic pay prints the current valid code and never claims payment success', { timeout: 300_000 }, (t) => {

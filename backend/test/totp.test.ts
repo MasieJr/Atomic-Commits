@@ -2,16 +2,37 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import {
-  formatPaymentCode,
-  generateTotp,
-  parsePaymentCode,
+  formatBase36PaymentCode as formatPaymentCode,
+  generateBase36Totp as generateTotp,
+  parseBase36PaymentCode as parsePaymentCode,
   TOTP_TIME_STEP_MS,
-  verifyTotp,
+  verifyBase36Totp as verifyTotp,
+  formatPaymentCode as formatApiPaymentCode,
+  generateTotp as generateApiTotp,
+  parsePaymentCode as parseApiPaymentCode,
+  verifyTotp as verifyApiTotp,
 } from '../src/domain/payment-engine/totp';
 
 // Public RFC 6238 SHA1 seed: ASCII "12345678901234567890".
 const RFC_SEED = 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ';
 const SHORT_SEED = 'GEZDGNBVGY3TQOJQGEZDGNBVGY';
+
+test('API TOTP remains decimal and accepts server-enrolled prefixes', () => {
+  for (const [seconds, expected] of [
+    [59, '287082'], [1111111109, '081804'], [1111111111, '050471'],
+    [1234567890, '005924'], [2000000000, '279037'], [20000000000, '353130'],
+  ] as const) {
+    const timestamp = seconds * 1000;
+    assert.equal(generateApiTotp(RFC_SEED, timestamp).code, expected);
+    assert.equal(verifyApiTotp(RFC_SEED, expected, timestamp, 0).valid, true);
+  }
+  assert.equal(formatApiPaymentCode('ABC234', '287082'), 'ABC234-287082');
+  assert.deepEqual(parseApiPaymentCode('ABC234-287082'), { prefix: 'ABC234', code: '287082' });
+  assert.equal(parseApiPaymentCode('ABC234-I3IDBE'), undefined);
+  assert.deepEqual(verifyApiTotp(RFC_SEED, 'I3IDBE', 59000, 0), { valid: false });
+  assert.deepEqual(verifyApiTotp(RFC_SEED, '287082', 60000, 0), { valid: false });
+  assert.deepEqual(verifyApiTotp(RFC_SEED, '287082', 60000, 1), { valid: true, timeStep: 1 });
+});
 
 // Independently calculated from RFC 6238 Appendix B using Python's hmac and
 // struct libraries: 31-bit HOTP truncation encoded as six uppercase base36

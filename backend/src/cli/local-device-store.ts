@@ -278,6 +278,14 @@ export function loadApiDeviceProfile(home: string): ApiDeviceProfile {
   return validateApiDeviceProfile(strictJsonParse(readProtectedProfile(home)));
 }
 
+/** Preserve existing v1 profiles without treating a v2 local demo as API-enrolled. */
+export function loadExistingDecimalProfile(home: string): ApiDeviceProfile | undefined {
+  const value = strictJsonParse(readProtectedProfile(home));
+  if (value !== null && typeof value === "object" && !Array.isArray(value) &&
+      (value as Record<string, unknown>).version === 2) return undefined;
+  return validateApiDeviceProfile(value);
+}
+
 /**
  * Validates an already-parsed packet value against the exact contract:
  * exactly understood fields, supported version and parameters, canonical

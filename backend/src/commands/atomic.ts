@@ -32,16 +32,23 @@ import {
   isProfileExpired,
   isMissingProfileError,
   loadApiDeviceProfile,
+  loadExistingDecimalProfile,
   loadDeviceProfile,
   parseEnrollmentPacket,
   prepareExistingDeviceProfile,
   resolveDeviceHome,
   resolveApiDeviceHome,
   saveDeviceProfile,
+  type ApiDeviceProfile,
   type DeviceProfile,
 } from "../cli/local-device-store";
 import { ApiEnrollmentError, enrollWithApi } from "../cli/api-enrollment";
-import { formatPaymentCode, generateDecimalTotp, generateTotp } from "../domain/payment-engine/totp";
+import {
+  formatBase36PaymentCode,
+  formatPaymentCode,
+  generateBase36Totp,
+  generateDecimalTotp,
+} from "../domain/payment-engine/totp";
 import { randomBytes, randomInt } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
@@ -130,6 +137,9 @@ function randomPrefix(): string {
 
 /** Create or reuse a protected profile; safely upgrade valid legacy profiles. */
 function runSetup(io: AtomicIo): number {
+  if (io.env.ATOMIC_ALLOW_LOCAL_DEMO !== "1") {
+    throw new AtomicCliError("Local demo setup is disabled. Run 'atomic connect' for API enrollment.");
+  }
   const home = resolveDeviceHome(io.env);
   try {
     const { profile, upgraded } = prepareExistingDeviceProfile(home, io.now());
@@ -182,18 +192,34 @@ function runEnroll(rest: readonly string[], io: AtomicIo): number {
   return 0;
 }
 
-function runPay(io: AtomicIo): number {
+/** Prefer a new API profile, then preserve any already-enrolled v1 profile. */
+function findDecimalProfile(io: AtomicIo): { profile: ApiDeviceProfile; home: string; existing: boolean } | undefined {
+  const apiHome = resolveApiDeviceHome(io.env);
   try {
-    const apiProfile = loadApiDeviceProfile(resolveApiDeviceHome(io.env));
-    const nowEpochMs = io.now();
-    assertProfileUsable(apiProfile, nowEpochMs);
-    const generation = generateDecimalTotp(apiProfile.secret, nowEpochMs);
-    io.stdout(`${apiProfile.prefix}-${generation.code}`);
-    io.stdout(`Code expires at: ${formatEpochMs(Math.min(generation.expiresAtEpochMs, apiProfile.expiresAtEpochMs))} (device-local clock).`);
-    io.stdout(PAY_DISCLAIMER);
-    return 0;
+    return { profile: loadApiDeviceProfile(apiHome), home: apiHome, existing: false };
   } catch (err) {
     if (!isMissingProfileError(err)) throw err;
+  }
+  const existingHome = resolveDeviceHome(io.env);
+  try {
+    const profile = loadExistingDecimalProfile(existingHome);
+    return profile ? { profile, home: existingHome, existing: true } : undefined;
+  } catch (err) {
+    if (!isMissingProfileError(err)) throw err;
+    return undefined;
+  }
+}
+
+function runPay(io: AtomicIo): number {
+  const enrolled = findDecimalProfile(io);
+  if (enrolled) {
+    const nowEpochMs = io.now();
+    assertProfileUsable(enrolled.profile, nowEpochMs);
+    const generation = generateDecimalTotp(enrolled.profile.secret, nowEpochMs);
+    io.stdout(formatPaymentCode(enrolled.profile.prefix, generation.code));
+    io.stdout(`Code expires at: ${formatEpochMs(Math.min(generation.expiresAtEpochMs, enrolled.profile.expiresAtEpochMs))} (device-local clock).`);
+    io.stdout(PAY_DISCLAIMER);
+    return 0;
   }
   if (io.env.ATOMIC_ALLOW_LOCAL_DEMO !== "1") {
     throw new AtomicCliError("No API-enrolled device is available. Run 'atomic connect' while online first.");
@@ -202,8 +228,8 @@ function runPay(io: AtomicIo): number {
   const profile = loadDeviceProfile(home, io.now());
   const nowEpochMs = io.now();
   assertProfileUsable(profile, nowEpochMs);
-  const generation = generateTotp(profile.secret, nowEpochMs);
-  const presented = formatPaymentCode(profile.prefix, generation.code);
+  const generation = generateBase36Totp(profile.secret, nowEpochMs);
+  const presented = formatBase36PaymentCode(profile.prefix, generation.code);
   io.stdout(presented);
   io.stdout(`Code expires at: ${formatEpochMs(Math.min(generation.expiresAtEpochMs, profile.expiresAtEpochMs))} (device-local clock).`);
   io.stdout(PAY_DISCLAIMER);
@@ -212,18 +238,15 @@ function runPay(io: AtomicIo): number {
 }
 
 function runStatus(io: AtomicIo): number {
-  try {
-    const home = resolveApiDeviceHome(io.env);
-    const profile = loadApiDeviceProfile(home);
-    io.stdout("Enrolled through the API (locally stored data).");
-    io.stdout(`Prefix: ${profile.prefix}`);
-    io.stdout(`Local enrollment expires at: ${formatEpochMs(profile.expiresAtEpochMs)} (local data only).`);
-    io.stdout(`Device profile: ${deviceProfilePath(home)}`);
-    if (isProfileExpired(profile, io.now())) io.stdout("The locally stored expiry has already passed.");
+  const enrolled = findDecimalProfile(io);
+  if (enrolled) {
+    io.stdout(enrolled.existing ? "Enrolled with an existing decimal profile (locally stored data)." : "Enrolled through the API (locally stored data).");
+    io.stdout(`Prefix: ${enrolled.profile.prefix}`);
+    io.stdout(`Local enrollment expires at: ${formatEpochMs(enrolled.profile.expiresAtEpochMs)} (local data only).`);
+    io.stdout(`Device profile: ${deviceProfilePath(enrolled.home)}`);
+    if (isProfileExpired(enrolled.profile, io.now())) io.stdout("The locally stored expiry has already passed.");
     io.stdout(STATUS_DISCLAIMER);
     return 0;
-  } catch (err) {
-    if (!isMissingProfileError(err)) throw err;
   }
   const home = resolveDeviceHome(io.env);
   let loaded: ReturnType<typeof loadDeviceProfile>;

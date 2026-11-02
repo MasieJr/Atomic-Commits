@@ -86,10 +86,12 @@ Windows, or `${XDG_DATA_HOME:-~/.local/share}/atomic-commits/api-device` on
 POSIX. `ATOMIC_API_DEVICE_HOME` can override that directory with an absolute
 path. The same owner-only protection and no-overwrite rules apply. A saved
 profile's local status cannot report a later remote revocation while offline.
+Previously enrolled version-1 decimal profiles in the older device directory
+remain usable offline without being rewritten.
 
 ### Legacy local-only demo profile
 
-`atomic setup` creates the JSON below if no profile exists. Its secret has
+With `ATOMIC_ALLOW_LOCAL_DEMO=1`, `atomic setup` creates the JSON below if no profile exists. Its secret has
 160 random bits, its four-character prefix is randomly generated, and its local expiry is
 seven days after setup; that expiry does not establish provider grant validity.
 The command reuses an existing profile and fails closed on a corrupt, revoked,
@@ -143,10 +145,10 @@ explicitly only when it is safe to replace it.
 `backend/src/domain/payment-engine/totp.ts` exports:
 
 ```ts
-generateTotp(secret, atEpochMs) // { code, timeStep, expiresAtEpochMs }
-verifyTotp(secret, code, atEpochMs, allowedDriftSteps) // {valid:true,timeStep} | {valid:false}
-formatPaymentCode(prefix, code) // XXXX-XXXXXX
-parsePaymentCode(presentation) // {prefix,code} | undefined
+generateBase36Totp(secret, atEpochMs) // { code, timeStep, expiresAtEpochMs }
+verifyBase36Totp(secret, code, atEpochMs, allowedDriftSteps) // {valid:true,timeStep} | {valid:false}
+formatBase36PaymentCode(prefix, code) // XXXX-XXXXXX
+parseBase36PaymentCode(presentation) // {prefix,code} | undefined
 ```
 
 The secret is canonical Base32. The code is **six uppercase alphanumeric

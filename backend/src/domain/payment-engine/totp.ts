@@ -1,10 +1,9 @@
 /**
  * TOTP payment code — pure generator/verifier.
  *
- * - 30-second RFC 6238 counter and HMAC-SHA1 with RFC 4226 dynamic
- *   truncation. The 31-bit result is encoded as six uppercase base36
- *   characters, left-padded with zeroes. This presentation is NOT compatible
- *   with standard six-decimal-digit TOTP; both sides must use this contract.
+ * - The API contract is RFC 6238 HMAC-SHA1 with six decimal digits and a
+ *   30-second step. The explicitly named base36 helpers support the older
+ *   local-only demo and are not compatible with API redemption.
  * - No database, no network, no internal clock: `atEpochMs` is injected on
  *   every call as a non-negative safe-integer number of epoch milliseconds.
  *   `expiresAtEpochMs` is the exact step-aligned instant
@@ -34,7 +33,7 @@
  *   earlier, one step later (never before the epoch) — and the first match
  *   determines the reported timeStep, so identical inputs always yield
  *   identical results.
- * - The 31-bit output space is finite, so distinct steps CAN share a code,
+ * - The output space is finite, so distinct steps CAN share a code,
  *   and the same presented code can also be accepted at two different
  *   clocks, each resolving to its own timeStep. Verification is NOT replay
  *   protection: the backend MUST atomically claim the (device, timeStep)
@@ -80,6 +79,10 @@ const CODE_PATTERN = /^[A-Z0-9]{6}$(?![\s\S])/;
 const PAYMENT_CODE_PREFIX_PATTERN = /^[A-Z0-9]{4}$(?![\s\S])/;
 /** Full presented form: XXXX-XXXXXX with nothing else attached. */
 const PAYMENT_CODE_PATTERN = /^([A-Z0-9]{4})-([A-Z0-9]{6})$(?![\s\S])/;
+/** The server's established decimal TOTP format allows 4–12 character prefixes. */
+const DECIMAL_CODE_PATTERN = /^[0-9]{6}$(?![\s\S])/;
+const DECIMAL_PREFIX_PATTERN = /^[A-Z0-9]{4,12}$(?![\s\S])/;
+const DECIMAL_PAYMENT_CODE_PATTERN = /^([A-Z0-9]{4,12})-([0-9]{6})$(?![\s\S])/;
 
 /** Generic construction-time error messages; constant and data-free. */
 const INVALID_TOTP_TIME = "TOTP time must be a non-negative whole number of milliseconds.";
@@ -206,7 +209,7 @@ function isCode(code: unknown): code is string {
  * Throws a generic Error on malformed secret or malformed time; safe inputs
  * always produce a well-formed six-character alphanumeric code.
  */
-export function generateTotp(secret: string, atEpochMs: number): TotpGeneration {
+export function generateBase36Totp(secret: string, atEpochMs: number): TotpGeneration {
   const time = assertValidAtEpochMs(atEpochMs);
   const key = decodeBase32Secret(secret);
   if (key === null) {
@@ -224,9 +227,14 @@ export function generateTotp(secret: string, atEpochMs: number): TotpGeneration 
 
 /** RFC 6238 decimal presentation used by the current API branch. */
 export function generateDecimalTotp(secret: string, atEpochMs: number): TotpGeneration {
-  const generated = generateTotp(secret, atEpochMs);
+  const generated = generateBase36Totp(secret, atEpochMs);
   const truncated = Number.parseInt(generated.code, 36);
   return { ...generated, code: String(truncated % 1_000_000).padStart(6, "0") };
+}
+
+/** Default exports retain the backend's established decimal TOTP contract. */
+export function generateTotp(secret: string, atEpochMs: number): TotpGeneration {
+  return generateDecimalTotp(secret, atEpochMs);
 }
 
 /**
@@ -252,6 +260,26 @@ export function verifyTotp(
   atEpochMs: number,
   allowedDriftSteps: number,
 ): TotpVerification {
+  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "decimal");
+}
+
+/** The legacy alphanumeric verifier is only for local-demo profiles. */
+export function verifyBase36Totp(
+  secret: string,
+  code: unknown,
+  atEpochMs: number,
+  allowedDriftSteps: number,
+): TotpVerification {
+  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "base36");
+}
+
+function verifyCode(
+  secret: string,
+  code: unknown,
+  atEpochMs: number,
+  allowedDriftSteps: number,
+  encoding: "decimal" | "base36",
+): TotpVerification {
   if (
     typeof allowedDriftSteps !== "number" ||
     !Number.isSafeInteger(allowedDriftSteps) ||
@@ -262,7 +290,9 @@ export function verifyTotp(
   }
   const key = decodeBase32Secret(secret);
   if (key === null) return { valid: false };
-  if (!isCode(code)) return { valid: false };
+  if (encoding === "decimal" ? typeof code !== "string" || !DECIMAL_CODE_PATTERN.test(code) : !isCode(code)) {
+    return { valid: false };
+  }
   if (
     typeof atEpochMs !== "number" ||
     !Number.isSafeInteger(atEpochMs) ||
@@ -271,17 +301,17 @@ export function verifyTotp(
     return { valid: false };
   }
 
-  const provided = Buffer.from(code, "utf8");
+  const provided = Buffer.from(code as string, "utf8");
   const timeStep = Math.floor(atEpochMs / TOTP_TIME_STEP_MS);
   const stepOffsets: readonly number[] =
     allowedDriftSteps === 0 ? [0] : [0, -1, 1];
   for (const offset of stepOffsets) {
     const candidateStep = timeStep + offset;
     if (candidateStep < 0) continue;
-    const candidate = Buffer.from(
-      hotpBase36(key, BigInt(candidateStep)),
-      "utf8",
-    );
+    const base36 = hotpBase36(key, BigInt(candidateStep));
+    const candidate = Buffer.from(encoding === "decimal"
+      ? String(Number.parseInt(base36, 36) % 1_000_000).padStart(6, "0")
+      : base36, "utf8");
     // Equal-length, content-only, constant-time comparison.
     if (timingSafeEqual(candidate, provided)) {
       return { valid: true, timeStep: candidateStep };
@@ -294,7 +324,7 @@ export function verifyTotp(
  * Render "XXXX-XXXXXX": exactly four and six uppercase alphanumeric
  * characters, separated by one hyphen. No trimming or case normalization.
  */
-export function formatPaymentCode(prefix: string, code: string): string {
+export function formatBase36PaymentCode(prefix: string, code: string): string {
   if (typeof prefix !== "string" || !PAYMENT_CODE_PREFIX_PATTERN.test(prefix)) {
     throw new Error(INVALID_PAYMENT_CODE_PREFIX);
   }
@@ -312,11 +342,29 @@ export function formatPaymentCode(prefix: string, code: string): string {
  * trailing content. Returns undefined (not an error) for anything else, so
  * endpoint callers can treat parse failure uniformly as client error.
  */
-export function parsePaymentCode(
+export function parseBase36PaymentCode(
   input: unknown,
 ): { readonly prefix: string; readonly code: string } | undefined {
   if (typeof input !== "string") return undefined;
   const match = PAYMENT_CODE_PATTERN.exec(input);
   if (match === null) return undefined;
   return { prefix: match[1], code: match[2] };
+}
+
+/** Format a server-compatible decimal credential without altering its prefix. */
+export function formatPaymentCode(prefix: string, code: string): string {
+  if (typeof prefix !== "string" || !DECIMAL_PREFIX_PATTERN.test(prefix)) {
+    throw new Error("Payment code prefix must be 4-12 ASCII uppercase A-Z/0-9 characters.");
+  }
+  if (typeof code !== "string" || !DECIMAL_CODE_PATTERN.test(code)) {
+    throw new Error("Payment code must be exactly six decimal characters.");
+  }
+  return `${prefix}-${code}`;
+}
+
+/** Parse only the decimal credential accepted by the redemption API. */
+export function parsePaymentCode(input: unknown): { readonly prefix: string; readonly code: string } | undefined {
+  if (typeof input !== "string") return undefined;
+  const match = DECIMAL_PAYMENT_CODE_PATTERN.exec(input);
+  return match ? { prefix: match[1], code: match[2] } : undefined;
 }
