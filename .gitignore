@@ -8,3 +8,4 @@ server-backup.js
 # Offline payer profiles and conventionally named trusted import packets.
 device-profile.json
 atomic-enrollment*.json
+.atomic-profile-*.tmp

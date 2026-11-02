@@ -5,7 +5,7 @@ import { test, type TestContext } from 'node:test';
 
 import { Pool } from 'pg';
 
-import { parseEnrollmentPacket } from '../src/cli/local-device-store';
+import { parseApiEnrollmentPacket } from '../src/cli/local-device-store';
 import { generateTotp, isValidTotpSecret, verifyTotp } from '../src/domain/payment-engine/totp';
 import { createApp } from '../src/app';
 import { createDataEncryption } from '../src/services/data-encryption';
@@ -113,7 +113,7 @@ test('enrollment returns the exact packet the offline client accepts, stores onl
   assert.match(packet.prefix, /^[A-Z0-9]{4,12}$/);
   assert.notEqual(packet.prefix, '4RTW');
   /* the real offline-client parser accepts it unchanged */
-  const profile = parseEnrollmentPacket(text, Date.now());
+  const profile = parseApiEnrollmentPacket(text, Date.now());
   assert.equal(profile.prefix, packet.prefix);
 
   /* the stored value is ciphertext, and the backend can read it back */

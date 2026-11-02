@@ -3,14 +3,15 @@
  * `atomic` - offline payer-side demo CLI.
  *
  * Commands:
+ *   atomic connect                Enroll a device using the authenticated API.
+ *   atomic setup                  Create a local-only demo device.
  *   atomic enroll --file <path>   Import a trusted, one-time enrollment packet.
- *   atomic pay                    Print the current PREFIX-123456 credential.
+ *   atomic pay                    Print the current XXXX-XXXXXX credential.
  *   atomic status                 Print locally stored enrollment facts.
  *
  * `pay` and `status` are STRICTLY LOCAL: no network access, no provider or
- * Open Payments resources, no credentials, no database. `pay` computes an
- * RFC 6238 TOTP (HMAC-SHA1, six decimal digits, 30-second step) from the
- * locally enrolled secret.
+ * Open Payments resources, no credentials, no database. API-issued profiles
+ * use six decimal TOTP digits; opt-in local-demo profiles use base36.
  *
  * NON-DISCLOSURE: the TOTP secret is never read from, or written to, command
  * arguments, the environment, stdout/stderr, or logs. It lives only inside
@@ -30,17 +31,34 @@ import {
   deviceProfilePath,
   isProfileExpired,
   isMissingProfileError,
+  loadApiDeviceProfile,
+  loadExistingDecimalProfile,
   loadDeviceProfile,
   parseEnrollmentPacket,
+  prepareExistingDeviceProfile,
   resolveDeviceHome,
+  resolveApiDeviceHome,
   saveDeviceProfile,
+  type ApiDeviceProfile,
+  type DeviceProfile,
 } from "../cli/local-device-store";
-import { formatPaymentCode, generateTotp } from "../domain/payment-engine/totp";
+import { ApiEnrollmentError, enrollWithApi } from "../cli/api-enrollment";
+import {
+  formatBase36PaymentCode,
+  formatPaymentCode,
+  generateBase36Totp,
+  generateDecimalTotp,
+} from "../domain/payment-engine/totp";
+import { randomBytes, randomInt } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { createInterface } from "node:readline/promises";
+import { Writable } from "node:stream";
 
 const USAGE = `Usage:
+  atomic connect [--api-url URL]  Log in and enroll through the API.
+  atomic setup                  Create a local-only demo device.
   atomic enroll --file <path>   Import a trusted, one-time enrollment packet.
-  atomic pay                    Print the current PREFIX-123456 credential.
+  atomic pay                    Print the current PREFIX-CODE credential.
   atomic status                 Print locally stored enrollment facts.`;
 
 const ENROLL_DISCLAIMER =
@@ -48,10 +66,13 @@ const ENROLL_DISCLAIMER =
 const PAY_DISCLAIMER =
   "This is a short-lived credential only. It is not a payment, not a receipt, and not proof of a successful purchase.";
 const STATUS_NOT_ENROLLED =
-  "Not enrolled. Run 'atomic enroll --file <packet path>' to provision the demo device shape first.";
+  "Not enrolled. Run 'atomic connect' while online first.";
 const STATUS_DISCLAIMER =
   "This status shows locally stored enrollment facts only. It does not show wallet balance, provider grant validity, or any current payment authorization.";
 const GENERIC_FAILURE = "Failed, and detail is suppressed for safety.";
+const LOCAL_DEVICE_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
+const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const PREFIX_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 
 /** I/O boundary for the CLI so the command logic stays pluggable. */
 export type AtomicIo = {
@@ -105,6 +126,58 @@ function parseEnrollArgs(rest: readonly string[]): string {
   return packetPath;
 }
 
+/** Every character has five uniformly random bits; 32 characters encode 20 bytes. */
+function randomBase32(length: number): string {
+  return Array.from(randomBytes(length), (byte) => BASE32_ALPHABET[byte & 31]).join("");
+}
+
+function randomPrefix(): string {
+  return Array.from({ length: 4 }, () => PREFIX_ALPHABET[randomInt(PREFIX_ALPHABET.length)]).join("");
+}
+
+/** Create or reuse a protected profile; safely upgrade valid legacy profiles. */
+function runSetup(io: AtomicIo): number {
+  if (io.env.ATOMIC_ALLOW_LOCAL_DEMO !== "1") {
+    throw new AtomicCliError("Local demo setup is disabled. Run 'atomic connect' for API enrollment.");
+  }
+  const home = resolveDeviceHome(io.env);
+  try {
+    const { profile, upgraded } = prepareExistingDeviceProfile(home, io.now());
+    io.stdout(upgraded ? "Updated the local device to the four-by-six code format." : "Local device is already set up.");
+    io.stdout(`Prefix: ${profile.prefix}`);
+    io.stdout(`Device profile: ${deviceProfilePath(home)}`);
+    if (upgraded) io.stdout("The backend must register the updated prefix and code format before redemption.");
+    return 0;
+  } catch (err) {
+    if (!isMissingProfileError(err)) throw err;
+  }
+
+  const now = io.now();
+  const expiresAtEpochMs = now + LOCAL_DEVICE_LIFETIME_MS;
+  if (!Number.isSafeInteger(now) || now < 0 || !Number.isSafeInteger(expiresAtEpochMs) ||
+    !Number.isFinite(new Date(expiresAtEpochMs).getTime())) {
+    throw new AtomicCliError("The device clock is invalid; fix it before setup.");
+  }
+  const profile: DeviceProfile = {
+    version: 2,
+    prefix: randomPrefix(),
+    secret: randomBase32(32),
+    algorithm: "SHA1",
+    codeEncoding: "BASE36-HOTP31",
+    codeLength: 6,
+    periodSeconds: 30,
+    expiresAtEpochMs,
+    revoked: false,
+  };
+  const { profilePath } = saveDeviceProfile(home, profile);
+  io.stdout("Created a protected local device profile.");
+  io.stdout(`Prefix: ${profile.prefix}`);
+  io.stdout(`Local enrollment expires at: ${formatEpochMs(expiresAtEpochMs)} (local data only).`);
+  io.stdout(`Device profile: ${profilePath}`);
+  io.stdout("The backend must register this device before a merchant can redeem its codes.");
+  return 0;
+}
+
 function runEnroll(rest: readonly string[], io: AtomicIo): number {
   const packetPath = parseEnrollArgs(rest);
   const text = readEnrollmentPacketFile(packetPath);
@@ -119,20 +192,62 @@ function runEnroll(rest: readonly string[], io: AtomicIo): number {
   return 0;
 }
 
+/** Prefer a new API profile, then preserve any already-enrolled v1 profile. */
+function findDecimalProfile(io: AtomicIo): { profile: ApiDeviceProfile; home: string; existing: boolean } | undefined {
+  const apiHome = resolveApiDeviceHome(io.env);
+  try {
+    return { profile: loadApiDeviceProfile(apiHome), home: apiHome, existing: false };
+  } catch (err) {
+    if (!isMissingProfileError(err)) throw err;
+  }
+  const existingHome = resolveDeviceHome(io.env);
+  try {
+    const profile = loadExistingDecimalProfile(existingHome);
+    return profile ? { profile, home: existingHome, existing: true } : undefined;
+  } catch (err) {
+    if (!isMissingProfileError(err)) throw err;
+    return undefined;
+  }
+}
+
 function runPay(io: AtomicIo): number {
+  const enrolled = findDecimalProfile(io);
+  if (enrolled) {
+    const nowEpochMs = io.now();
+    assertProfileUsable(enrolled.profile, nowEpochMs);
+    const generation = generateDecimalTotp(enrolled.profile.secret, nowEpochMs);
+    io.stdout(formatPaymentCode(enrolled.profile.prefix, generation.code));
+    io.stdout(`Code expires at: ${formatEpochMs(Math.min(generation.expiresAtEpochMs, enrolled.profile.expiresAtEpochMs))} (device-local clock).`);
+    io.stdout(PAY_DISCLAIMER);
+    return 0;
+  }
+  if (io.env.ATOMIC_ALLOW_LOCAL_DEMO !== "1") {
+    throw new AtomicCliError("No API-enrolled device is available. Run 'atomic connect' while online first.");
+  }
   const home = resolveDeviceHome(io.env);
   const profile = loadDeviceProfile(home, io.now());
   const nowEpochMs = io.now();
   assertProfileUsable(profile, nowEpochMs);
-  const generation = generateTotp(profile.secret, nowEpochMs);
-  const presented = formatPaymentCode(profile.prefix, generation.code);
+  const generation = generateBase36Totp(profile.secret, nowEpochMs);
+  const presented = formatBase36PaymentCode(profile.prefix, generation.code);
   io.stdout(presented);
   io.stdout(`Code expires at: ${formatEpochMs(Math.min(generation.expiresAtEpochMs, profile.expiresAtEpochMs))} (device-local clock).`);
   io.stdout(PAY_DISCLAIMER);
+  io.stdout("Local demo only: this profile is not registered with the API. Run 'atomic connect' while online.");
   return 0;
 }
 
 function runStatus(io: AtomicIo): number {
+  const enrolled = findDecimalProfile(io);
+  if (enrolled) {
+    io.stdout(enrolled.existing ? "Enrolled with an existing decimal profile (locally stored data)." : "Enrolled through the API (locally stored data).");
+    io.stdout(`Prefix: ${enrolled.profile.prefix}`);
+    io.stdout(`Local enrollment expires at: ${formatEpochMs(enrolled.profile.expiresAtEpochMs)} (local data only).`);
+    io.stdout(`Device profile: ${deviceProfilePath(enrolled.home)}`);
+    if (isProfileExpired(enrolled.profile, io.now())) io.stdout("The locally stored expiry has already passed.");
+    io.stdout(STATUS_DISCLAIMER);
+    return 0;
+  }
   const home = resolveDeviceHome(io.env);
   let loaded: ReturnType<typeof loadDeviceProfile>;
   try {
@@ -152,6 +267,7 @@ function runStatus(io: AtomicIo): number {
     throw new AtomicStoreError("The local device profile is marked revoked.");
   }
   io.stdout("Enrolled (locally stored data).");
+  io.stdout("Local demo only: this profile is not registered with the API.");
   io.stdout(`Prefix: ${loaded.prefix}`);
   io.stdout(`Local enrollment expires at: ${formatEpochMs(loaded.expiresAtEpochMs)} (local data only).`);
   io.stdout(`Device profile: ${deviceProfilePath(home)}`);
@@ -167,6 +283,57 @@ function formatEpochMs(epochMs: number): string {
   return new Date(epochMs).toISOString();
 }
 
+async function runConnect(args: readonly string[], io: AtomicIo): Promise<number> {
+  try {
+    let baseUrl = io.env.ATOMIC_API_URL?.trim() ?? "";
+    if (args.length === 2 && args[0] === "--api-url") baseUrl = args[1];
+    else if (args.length !== 0) throw new AtomicCliError(USAGE);
+    if (!process.stdin.isTTY || !process.stdout.isTTY) {
+      throw new AtomicCliError("Connect requires an interactive terminal for login.");
+    }
+    let muted = false;
+    const output = new Writable({
+      write(chunk: Buffer, _encoding, done) {
+        if (muted) done();
+        else process.stdout.write(chunk, done);
+      },
+    });
+    Object.assign(output, { isTTY: true, columns: process.stdout.columns ?? 80 });
+    const rl = createInterface({ input: process.stdin, output, terminal: true });
+    const interrupt = new AbortController();
+    rl.on("SIGINT", () => interrupt.abort());
+    const ask = (question: string) => rl.question(question, { signal: interrupt.signal });
+    try {
+      if (!baseUrl) baseUrl = (await ask("API URL: ")).trim();
+      const email = (await ask("Email: ")).trim();
+      process.stdout.write("Password: ");
+      muted = true;
+      let password: string;
+      try { password = await ask(""); } finally { muted = false; process.stdout.write("\n"); }
+      const profile = await enrollWithApi({
+        baseUrl, email, password, deviceHome: resolveApiDeviceHome(io.env), now: io.now,
+        chooseGrant: async (grants) => {
+          io.stdout("Available approved grants:");
+          grants.forEach((grant, index) => io.stdout(`  ${index + 1}. ${grant.payerWalletAddress} (until ${grant.validUntil})`));
+          const choice = await ask("Choose a grant number: ");
+          return /^[1-9][0-9]*$/.test(choice) ? Number(choice) - 1 : -1;
+        },
+      });
+      io.stdout("Device enrolled through the API. Payment codes now work offline.");
+      io.stdout(`Prefix: ${profile.prefix}`);
+      io.stdout(`Device profile: ${deviceProfilePath(resolveApiDeviceHome(io.env))}`);
+      return 0;
+    } finally {
+      rl.close();
+    }
+  } catch (err) {
+    const message = err instanceof ApiEnrollmentError || err instanceof AtomicStoreError || err instanceof AtomicCliError
+      ? err.message : GENERIC_FAILURE;
+    io.stderr(`atomic: connect failed. ${message}`);
+    return 1;
+  }
+}
+
 /**
  * Runs one command; returns the process exit code. All failures are
  * folded into data-free messages: known errors print their constant
@@ -180,8 +347,11 @@ export function runAtomic(argv: readonly string[], io: AtomicIo): number {
     return 0;
   }
   try {
-    if ((command === "pay" || command === "status") && rest.length !== 0) {
+    if ((command === "setup" || command === "pay" || command === "status") && rest.length !== 0) {
       throw new AtomicCliError(USAGE);
+    }
+    if (command === "setup") {
+      return runSetup(io);
     }
     if (command === "enroll") {
       return runEnroll(rest, io);
@@ -192,7 +362,7 @@ export function runAtomic(argv: readonly string[], io: AtomicIo): number {
     if (command === "status") {
       return runStatus(io);
     }
-    io.stderr(`${command === undefined ? USAGE : `Unknown command: expected 'enroll', 'pay', or 'status'.\n\n${USAGE}`}`);
+    io.stderr(`${command === undefined ? USAGE : `Unknown command: expected 'connect', 'setup', 'enroll', 'pay', or 'status'.\n\n${USAGE}`}`);
     return 1;
   } catch (err) {
     const message =
@@ -213,10 +383,16 @@ if (isMainModule()) {
   const exiting = (line: string, stream: "stdout" | "stderr"): void => {
     (stream === "stdout" ? process.stdout : process.stderr).write(`${line}\n`);
   };
-  process.exitCode = runAtomic(process.argv.slice(2), {
+  const io: AtomicIo = {
     stdout: (line) => exiting(line, "stdout"),
     stderr: (line) => exiting(line, "stderr"),
     now: () => Date.now(),
     env: process.env,
-  });
+  };
+  const args = process.argv.slice(2);
+  if (args[0] === "connect") {
+    void runConnect(args.slice(1), io).then((code) => { process.exitCode = code; });
+  } else {
+    process.exitCode = runAtomic(args, io);
+  }
 }
