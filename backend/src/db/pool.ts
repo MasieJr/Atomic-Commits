@@ -3,7 +3,9 @@ import { Pool } from 'pg';
 export function createDatabasePool(connectionString: string): Pool {
   const pool = new Pool({
     connectionString,
-    connectionTimeoutMillis: 5000,
+    connectionTimeoutMillis: 15000,
+    idleTimeoutMillis: 60000,
+    keepAlive: true,
     query_timeout: 5000,
   });
 
