@@ -1,5 +1,7 @@
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/core/utils.dart';
+import 'package:atomic_commits/core/network/api_client.dart';
+import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
 import 'package:atomic_commits/core/widgets/auth/header.dart';
@@ -7,8 +9,13 @@ import 'package:atomic_commits/core/widgets/auth/secondary.dart';
 import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
+import 'package:atomic_commits/features/auth/data/auth_api.dart';
+import 'package:atomic_commits/features/auth/data/auth_repository.dart';
+import 'package:atomic_commits/features/auth/screens/temp_dialog.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -21,24 +28,28 @@ class _LoginScreenState extends State<LoginScreen> {
   final Utils utils = Utils();
   final _formKey = GlobalKey<FormState>();
 
-  final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
 
-  final _nameFocus = FocusNode();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
 
-  bool _validatingLive = false;
+  final ApiClient _apiClient = ApiClient();
 
+  late final AuthRepository _authRepository = AuthRepository(
+    authApi: AuthApi(_apiClient),
+    tokenStorage: TokenStorage(),
+    apiClient: _apiClient,
+  );
+
+  bool _validatingLive = false;
   bool _obscurePassword = true;
+  bool _isLoading = false;
 
   @override
   void dispose() {
-    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
-    _nameFocus.dispose();
     _emailFocus.dispose();
     _passwordFocus.dispose();
     super.dispose();
@@ -46,21 +57,22 @@ class _LoginScreenState extends State<LoginScreen> {
 
   List<({FocusNode node, String? Function() validate})> _fieldEntries() => [
     (
-      node: _nameFocus,
-      validate: () => utils.validateName(_nameController.text),
-    ),
-    (
       node: _emailFocus,
       validate: () => utils.validateEmail(_emailController.text),
     ),
     (
       node: _passwordFocus,
-      validate: () => utils.validatePassword(_passwordController.text),
+      validate: () => _passwordController.text.isEmpty
+          ? 'Please enter your password'
+          : null,
     ),
   ];
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (_isLoading) return;
+
     setState(() => _validatingLive = true);
+
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     FocusScope.of(context).unfocus();
 
@@ -68,9 +80,12 @@ class _LoginScreenState extends State<LoginScreen> {
       final firstInvalid = _fieldEntries().firstWhere(
         (entry) => entry.validate() != null,
       );
+
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
+
         final nodeContext = firstInvalid.node.context;
+
         if (nodeContext != null) {
           Scrollable.ensureVisible(
             nodeContext,
@@ -78,17 +93,61 @@ class _LoginScreenState extends State<LoginScreen> {
             curve: Curves.easeOut,
           );
         }
+
         firstInvalid.node.requestFocus();
       });
+
       return;
     }
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
+
+    setState(() => _isLoading = true);
+
+    try {
+      final user = await _authRepository.login(
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+
+      if (!mounted) return;
+
+      TextInput.finishAutofillContext();
+
+      setState(() => _isLoading = false);
+
+      // temp Must create a home page
+      showTempDialog(context: context, user: user);
+    } on DioException catch (error) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      final responseData = error.response?.data;
+      String message = 'Unable to log in. Please try again.';
+
+      if (responseData is Map) {
+        final backendMessage = responseData['message'];
+
+        if (backendMessage is String && backendMessage.isNotEmpty) {
+          message = backendMessage;
+        }
+      } else if (error.response == null) {
+        message =
+            'Could not connect to the server. Check your internet connection.';
+      }
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Log-in preview only — no account has been created.'),
+          content: Text('Something went wrong. Please try again.'),
         ),
       );
+    }
   }
 
   @override
@@ -144,25 +203,10 @@ class _LoginScreenState extends State<LoginScreen> {
                                 const SizedBox(height: 16),
                                 Header(width: width),
                                 const SizedBox(height: 16),
+
                                 CustomTextField(
                                   width: width,
-                                  inputKey: const ValueKey('signup-name'),
-                                  label: 'Full name',
-                                  hint: 'Your full name',
-                                  icon: Icons.person_outline,
-                                  controller: _nameController,
-                                  focusNode: _nameFocus,
-                                  keyboardType: TextInputType.name,
-                                  autofillHints: const [AutofillHints.name],
-                                  textCapitalization: TextCapitalization.words,
-                                  textInputAction: TextInputAction.next,
-                                  nextFocus: _emailFocus,
-                                  validator: utils.validateName,
-                                ),
-                                const SizedBox(height: 10),
-                                CustomTextField(
-                                  width: width,
-                                  inputKey: const ValueKey('signup-email'),
+                                  inputKey: const ValueKey('login-email'),
                                   label: 'Email address',
                                   hint: 'you@example.com',
                                   icon: Icons.mail_outline,
@@ -174,17 +218,19 @@ class _LoginScreenState extends State<LoginScreen> {
                                   nextFocus: _passwordFocus,
                                   validator: utils.validateEmail,
                                 ),
+
                                 const SizedBox(height: 10),
+
                                 CustomTextField(
                                   width: width,
-                                  inputKey: const ValueKey('signup-password'),
+                                  inputKey: const ValueKey('login-password'),
                                   label: 'Password',
-                                  hint: 'At least 8 characters',
+                                  hint: 'Your password',
                                   icon: Icons.lock_outline,
                                   controller: _passwordController,
                                   focusNode: _passwordFocus,
                                   autofillHints: const [AutofillHints.password],
-                                  textInputAction: TextInputAction.next,
+                                  textInputAction: TextInputAction.done,
                                   nextFocus: null,
                                   obscure: _obscurePassword,
                                   toggleTooltip: _obscurePassword
@@ -193,22 +239,37 @@ class _LoginScreenState extends State<LoginScreen> {
                                   onToggle: () => setState(
                                     () => _obscurePassword = !_obscurePassword,
                                   ),
-                                  validator: utils.validatePassword,
+                                  validator: (value) =>
+                                      value == null || value.isEmpty
+                                      ? 'Please enter your password'
+                                      : null,
                                 ),
-                                const SizedBox(height: 10),
 
-                                const SizedBox(height: 18),
-                                SubmitButton(
-                                  width: width,
-                                  submit: _submit,
-                                  label: "Login",
-                                ),
+                                const SizedBox(height: 28),
+
+                                if (_isLoading)
+                                  const SizedBox(
+                                    height: 50,
+                                    child: Center(
+                                      child: CircularProgressIndicator(),
+                                    ),
+                                  )
+                                else
+                                  SubmitButton(
+                                    width: width,
+                                    submit: _submit,
+                                    label: 'Login',
+                                  ),
+
                                 const SizedBox(height: 14),
+
                                 Secondary(
                                   width: width,
                                   currentMode: AuthMode.login,
                                 ),
+
                                 const SizedBox(height: 12),
+
                                 const Text(
                                   'Pay by code. Carry on.',
                                   textAlign: TextAlign.center,

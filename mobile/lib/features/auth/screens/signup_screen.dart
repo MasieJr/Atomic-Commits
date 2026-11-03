@@ -1,4 +1,6 @@
 import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/core/network/api_client.dart';
+import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/core/utils.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
@@ -7,8 +9,13 @@ import 'package:atomic_commits/core/widgets/auth/secondary.dart';
 import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
+import 'package:atomic_commits/features/auth/data/auth_api.dart';
+import 'package:atomic_commits/features/auth/data/auth_repository.dart';
+import 'package:atomic_commits/features/auth/screens/temp_dialog.dart';
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
 /// Sign-up screen. Pure UI mock: no backend, no credential storage, no
 /// account creation. Matches the signup.html art direction (paper gradient,
@@ -29,6 +36,14 @@ class _SignupScreenState extends State<SignupScreen> {
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
 
+  final ApiClient _apiClient = ApiClient();
+
+  late final AuthRepository _authRepository = AuthRepository(
+    authApi: AuthApi(_apiClient),
+    tokenStorage: TokenStorage(),
+    apiClient: _apiClient,
+  );
+
   final _nameFocus = FocusNode();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
@@ -36,6 +51,7 @@ class _SignupScreenState extends State<SignupScreen> {
 
   bool _obscurePassword = true;
   bool _obscureConfirm = true;
+  bool _isLoading = false;
 
   /// Errors appear only after the first submit attempt; afterwards fields
   /// revalidate on user interaction so mistakes can be corrected inline.
@@ -84,7 +100,8 @@ class _SignupScreenState extends State<SignupScreen> {
     ),
   ];
 
-  void _submit() {
+  Future<void> _submit() async {
+    if (_isLoading) return;
     setState(() => _validatingLive = true);
     ScaffoldMessenger.of(context).hideCurrentSnackBar();
     FocusScope.of(context).unfocus();
@@ -108,13 +125,55 @@ class _SignupScreenState extends State<SignupScreen> {
       return;
     }
 
-    ScaffoldMessenger.of(context)
-      ..hideCurrentSnackBar()
-      ..showSnackBar(
+    setState(() => _isLoading = true);
+
+    try {
+      final user = await _authRepository.register(
+        name: _nameController.text.trim(),
+        email: _emailController.text.trim(),
+        password: _passwordController.text,
+      );
+
+      if (!mounted) return;
+
+      TextInput.finishAutofillContext();
+
+      setState(() => _isLoading = false);
+
+      // temp Must create a home page
+      showTempDialog(context: context, user: user);
+    } on DioException catch (error) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      final responseData = error.response?.data;
+      String message = 'Unable to log in. Please try again.';
+
+      if (responseData is Map) {
+        final backendMessage = responseData['message'];
+
+        if (backendMessage is String && backendMessage.isNotEmpty) {
+          message = backendMessage;
+        }
+      } else if (error.response == null) {
+        message =
+            'Could not connect to the server. Check your internet connection.';
+      }
+
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      if (!mounted) return;
+
+      setState(() => _isLoading = false);
+
+      ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Sign-up preview only — no account has been created.'),
+          content: Text('Something went wrong. Please try again.'),
         ),
       );
+    }
   }
 
   // --- Build --------------------------------------------------------------
