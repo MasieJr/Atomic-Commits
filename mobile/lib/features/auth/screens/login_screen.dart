@@ -1,7 +1,7 @@
+import 'package:atomic_commits/app/dependencies.dart';
+import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/core/utils.dart';
-import 'package:atomic_commits/core/network/api_client.dart';
-import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
 import 'package:atomic_commits/core/widgets/auth/header.dart';
@@ -9,12 +9,11 @@ import 'package:atomic_commits/core/widgets/auth/secondary.dart';
 import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
-import 'package:atomic_commits/features/auth/data/auth_api.dart';
-import 'package:atomic_commits/features/auth/data/auth_repository.dart';
-import 'package:atomic_commits/features/auth/screens/temp_dialog.dart';
+import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -32,14 +31,6 @@ class _LoginScreenState extends State<LoginScreen> {
 
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
-
-  final ApiClient _apiClient = ApiClient();
-
-  late final AuthRepository _authRepository = AuthRepository(
-    authApi: AuthApi(_apiClient),
-    tokenStorage: TokenStorage(),
-    apiClient: _apiClient,
-  );
 
   bool _validatingLive = false;
   bool _obscurePassword = true;
@@ -102,7 +93,7 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final user = await _authRepository.login(
+      await getIt<AuthController>().login(
         email: _emailController.text.trim(),
         password: _passwordController.text,
       );
@@ -113,8 +104,7 @@ class _LoginScreenState extends State<LoginScreen> {
 
       setState(() => _isLoading = false);
 
-      // temp Must create a home page
-      showTempDialog(context: context, user: user);
+      context.go(AppRoutes.home);
     } on DioException catch (error) {
       if (!mounted) return;
 

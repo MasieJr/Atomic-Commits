@@ -1,10 +1,9 @@
+import 'package:atomic_commits/app/router.dart';
+import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/app/theme/app_spacing.dart';
+import 'package:atomic_commits/core/widgets/app_header.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-
-import '../../../../app/router.dart';
-import '../../../../app/theme/app_colours.dart';
-import '../../../../app/theme/app_spacing.dart';
-import '../../../../core/widgets/app_header.dart';
 
 class PayerHomeScreen extends StatefulWidget {
   const PayerHomeScreen({super.key});
@@ -19,7 +18,7 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const AppHeader(),
+      appBar: const AppHeader(title: 'Make Payment'),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [

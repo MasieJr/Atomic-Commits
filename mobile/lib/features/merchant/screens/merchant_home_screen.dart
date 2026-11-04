@@ -1,3 +1,5 @@
+import 'package:atomic_commits/app/dependencies.dart';
+import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -12,7 +14,7 @@ class MerchantHomeScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const AppHeader(),
+      appBar: const AppHeader(title: 'Receive Payment'),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [
@@ -46,9 +48,7 @@ class MerchantHomeScreen extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 20),
-
           SizedBox(
             height: 92,
             child: OutlinedButton.icon(
@@ -67,9 +67,7 @@ class MerchantHomeScreen extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 24),
-
           Card(
             color: AppColours.surfaceMuted,
             child: Padding(
@@ -93,10 +91,8 @@ class MerchantHomeScreen extends StatelessWidget {
               ),
             ),
           ),
-
           const SizedBox(height: 36),
-
-          const Row(
+          Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(
@@ -108,7 +104,21 @@ class MerchantHomeScreen extends StatelessWidget {
                 'Each code works once.',
                 style: TextStyle(color: AppColours.textSecondary),
               ),
+              const SizedBox(height: 32),
             ],
+          ),
+          const SizedBox(height: 24),
+          Center(
+            child: OutlinedButton.icon(
+              onPressed: () async {
+                await getIt<AuthController>().logout();
+                if (context.mounted) {
+                  context.go(AppRoutes.login);
+                }
+              },
+              icon: const Icon(Icons.logout),
+              label: const Text('Sign out'),
+            ),
           ),
         ],
       ),

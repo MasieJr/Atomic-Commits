@@ -1,6 +1,6 @@
+import 'package:atomic_commits/app/dependencies.dart';
+import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
-import 'package:atomic_commits/core/network/api_client.dart';
-import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/core/utils.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
@@ -9,16 +9,12 @@ import 'package:atomic_commits/core/widgets/auth/secondary.dart';
 import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
-import 'package:atomic_commits/features/auth/data/auth_api.dart';
-import 'package:atomic_commits/features/auth/data/auth_repository.dart';
-import 'package:atomic_commits/features/auth/screens/temp_dialog.dart';
+import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
-/// Sign-up screen. Pure UI mock: no backend, no credential storage, no
-/// account creation. Matches the signup.html art direction (paper gradient,
-/// dotted texture, warm orbs) without any device frame.
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
 
@@ -29,20 +25,10 @@ class SignupScreen extends StatefulWidget {
 class _SignupScreenState extends State<SignupScreen> {
   final Utils utils = Utils();
   final _formKey = GlobalKey<FormState>();
-
   final _nameController = TextEditingController();
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
   final _confirmController = TextEditingController();
-
-  final ApiClient _apiClient = ApiClient();
-
-  late final AuthRepository _authRepository = AuthRepository(
-    authApi: AuthApi(_apiClient),
-    tokenStorage: TokenStorage(),
-    apiClient: _apiClient,
-  );
-
   final _nameFocus = FocusNode();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
@@ -127,7 +113,7 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final user = await _authRepository.register(
+      await getIt<AuthController>().register(
         name: _nameController.text.trim(),
         email: _emailController.text.trim(),
         password: _passwordController.text,
@@ -139,15 +125,15 @@ class _SignupScreenState extends State<SignupScreen> {
 
       setState(() => _isLoading = false);
 
-      // temp Must create a home page
-      showTempDialog(context: context, user: user);
+      context.go(AppRoutes.home);
     } on DioException catch (error) {
       if (!mounted) return;
 
       setState(() => _isLoading = false);
 
       final responseData = error.response?.data;
-      String message = 'Unable to log in. Please try again.';
+      String message =
+          'Unable to cteate an account. Please try again or log in if you already have an account.';
 
       if (responseData is Map) {
         final backendMessage = responseData['message'];
