@@ -15,7 +15,6 @@ import 'package:atomic_commits/features/auth/screens/temp_dialog.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 
 /// Sign-up screen. Pure UI mock: no backend, no credential storage, no
 /// account creation. Matches the signup.html art direction (paper gradient,
