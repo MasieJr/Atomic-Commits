@@ -16,13 +16,6 @@ JOBS = [
         "assets": True,
     },
     {
-        "src": DOCS / "raw" / "site-04-signup-filled.png",
-        "out": "signup-filled.png",
-        "crop": (60, 590, 1110, 1780),
-        "boxes": [(195, 750, 985, 1510), (480, 1545, 700, 1750)],
-        "assets": True,
-    },
-    {
         "src": DOCS / "raw" / "site-40-wallet-address.png",
         "out": "wallet-address.png",
         "crop": (60, 1690, 1110, 2532),

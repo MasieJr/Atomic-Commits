@@ -9,6 +9,7 @@ import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:atomic_commits/features/auth/data/auth_api.dart';
 import 'package:atomic_commits/features/auth/data/auth_repository.dart';
 import 'package:atomic_commits/features/auth/models/user_model.dart';
+import 'package:atomic_commits/features/merchant/screens/enter_code_screen.dart';
 import 'package:atomic_commits/features/wallet/screens/wallet_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -56,6 +57,7 @@ class _Users extends AuthController {
 }
 
 class _TutorialApi implements HttpClientAdapter {
+  bool receiving = false;
   @override
   Future<ResponseBody> fetch(
     RequestOptions options,
@@ -66,7 +68,13 @@ class _TutorialApi implements HttpClientAdapter {
     if (options.path == '/wallet' && options.method == 'GET') {
       response = {'wallet': null};
     } else if (options.path == '/wallets' && options.method == 'GET') {
-      response = {'wallets': <dynamic>[]};
+      response = {'wallets': receiving ? [
+        {'address': r'$ilp.interledger-test.dev/alice', 'assetCode': 'USD',
+         'assetScale': 2, 'isDefaultReceiving': true},
+      ] : <dynamic>[]};
+    } else if (options.path == '/merchant' && options.method == 'GET') {
+      response = {'merchant': {'status': 'ACTIVE',
+        'walletAddress': r'$ilp.interledger-test.dev/alice'}};
     } else if (options.path == '/payment-grants' && options.method == 'GET') {
       response = {'grants': <dynamic>[]};
     } else if (options.path == '/wallets/approvals' &&
@@ -104,7 +112,7 @@ Future<void> _pumpWallet(WidgetTester tester) async {
   await tester.pumpAndSettle();
 }
 
-Future<void> _setup(WidgetTester tester) async {
+Future<_TutorialApi> _setup(WidgetTester tester) async {
   FlutterSecureStorage.setMockInitialValues({});
   final users = _Users();
   final api = _TutorialApi();
@@ -129,6 +137,7 @@ Future<void> _setup(WidgetTester tester) async {
   tester.view.physicalSize = const Size(1170, 2532);
   tester.view.devicePixelRatio = 3.0;
   addTearDown(tester.view.reset);
+  return api;
 }
 
 Future<void> _save(String name) async {
@@ -156,7 +165,6 @@ void main() {
     await _pumpWallet(tester);
     await _warmAssets(tester, [
       'assets/images/wallet_tutorial/signup-fields.png',
-      'assets/images/wallet_tutorial/signup-filled.png',
       'assets/images/wallet_tutorial/dashboard-account.png',
       'assets/images/wallet_tutorial/wallet-address-list.png',
     ]);
@@ -167,8 +175,10 @@ void main() {
 
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Use the tutorial email'), findsOneWidget);
-    await _save('step-2-tutorial-email');
+    expect(find.text('Use your own email'), findsOneWidget);
+    expect(find.textContaining('email address you can access'), findsOneWidget);
+    expect(find.textContaining('dummyinbox.com'), findsNothing);
+    await _save('step-2-own-email');
 
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
@@ -221,5 +231,28 @@ void main() {
     await _save('flow-5-approval-pending');
 
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('capture wallet device entry', (tester) async {
+    await _setup(tester);
+    await _pumpWallet(tester);
+    expect(find.text('Devices'), findsOneWidget);
+    await _save('navigation-wallet-devices');
+  });
+
+  testWidgets('capture merchant scan entry', (tester) async {
+    final api = await _setup(tester);
+    api.receiving = true;
+    final theme = AppTheme.light;
+    await tester.pumpWidget(MaterialApp(
+      debugShowCheckedModeBanner: false,
+      theme: theme.copyWith(appBarTheme: theme.appBarTheme.copyWith(
+        titleTextStyle: theme.appBarTheme.titleTextStyle?.copyWith(fontFamily: 'Roboto'),
+      )),
+      home: const EnterCodeScreen(),
+    ));
+    await tester.pumpAndSettle();
+    expect(find.text('Scan QR code'), findsOneWidget);
+    await _save('navigation-merchant-scan');
   });
 }

@@ -9,6 +9,7 @@ import 'package:atomic_commits/features/auth/data/auth_api.dart';
 import 'package:atomic_commits/features/auth/data/auth_repository.dart';
 import 'package:atomic_commits/features/auth/models/user_model.dart';
 import 'package:atomic_commits/features/merchant/screens/enter_code_screen.dart';
+import 'package:atomic_commits/features/merchant/screens/scan_qr_screen.dart';
 import 'package:atomic_commits/features/payer/offline_profile.dart';
 import 'package:atomic_commits/features/payer/screens/payer_home_screen.dart';
 import 'package:dio/dio.dart';
@@ -47,24 +48,14 @@ class _Backend implements HttpClientAdapter {
   ) async {
     requests += 1;
     Map<String, dynamic> result;
-    if (options.path == '/wallet') {
+    if (options.path == '/wallets') {
       result = {
-        'wallet': {
+        'wallets': [{
           'address': 'https://ilp.interledger-test.dev/b',
           'assetCode': 'USD',
           'assetScale': 2,
-        },
-      };
-    } else if (options.path == '/wallets') {
-      result = {
-        'wallets': [
-          {
-            'address': 'https://ilp.interledger-test.dev/b',
-            'assetCode': 'USD',
-            'assetScale': 2,
-            'isDefaultReceiving': true,
-          },
-        ],
+          'isDefaultReceiving': true,
+        }],
       };
     } else if (options.path == '/merchant') {
       if (options.method == 'GET') {
@@ -135,9 +126,7 @@ void main() {
       ..httpClientAdapter = backend;
     getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
     getIt.registerSingleton<AuthController>(_User());
-    addTearDown(() async {
-      await getIt.reset();
-    });
+    addTearDown(() async => getIt.reset());
     return backend;
   }
 
@@ -167,10 +156,10 @@ void main() {
         findsOneWidget,
       );
       expect(backend.requests, 0);
-      expect(
-        find.textContaining('Device limit at enrollment is unavailable'),
-        findsOneWidget,
-      );
+      expect(find.text('Device limit at enrollment is unavailable.'), findsOneWidget);
+      final warning = find.text('Revocation cannot be checked while offline.');
+      await tester.scrollUntilVisible(warning, 160, scrollable: find.byType(Scrollable).first);
+      expect(warning, findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
       await getIt.reset();
     },
@@ -183,7 +172,6 @@ void main() {
       final backend = await setup(status);
       await tester.pumpWidget(const MaterialApp(home: EnterCodeScreen()));
       await tester.pumpAndSettle();
-      expect(find.text('Purchase amount (USD)'), findsOneWidget);
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Purchase amount (USD)'),
         '12.34',
@@ -214,4 +202,25 @@ void main() {
       await getIt.reset();
     });
   }
+
+  testWidgets('scanner returns a code to the checkout without submitting', (tester) async {
+    final backend = await setup('SUCCEEDED');
+    await tester.pumpWidget(const MaterialApp(home: EnterCodeScreen()));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextFormField, 'Purchase amount (USD)'), '12.34');
+    await tester.tap(find.text('Scan QR code'));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.byType(ScanQrScreen), findsOneWidget);
+    Navigator.of(tester.element(find.byType(ScanQrScreen))).pop('ABC234-123456');
+    await tester.pumpAndSettle();
+    expect(tester.widget<TextFormField>(find.widgetWithText(TextFormField, 'Customer payment code')).controller!.text, 'ABC234-123456');
+    expect(backend.redemption, isNull);
+    await tester.ensureVisible(find.text('Submit payment'));
+    await tester.tap(find.text('Submit payment'));
+    await tester.pumpAndSettle();
+    expect(backend.redemption?['paymentCode'], 'ABC234-123456');
+    expect(backend.redemption?['receivingWalletAddress'], 'https://ilp.interledger-test.dev/b');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

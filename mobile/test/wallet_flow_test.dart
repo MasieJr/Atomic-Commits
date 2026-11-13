@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:atomic_commits/app/dependencies.dart';
+import 'package:atomic_commits/app/theme/app_theme.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
@@ -36,6 +37,8 @@ class _WalletApi implements HttpClientAdapter {
   int starts = 0;
   int polls = 0;
   Map<String, dynamic>? grantRequest;
+  bool revoked = false;
+  bool walletFailure = false;
 
   @override
   Future<ResponseBody> fetch(
@@ -44,6 +47,10 @@ class _WalletApi implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     Map<String, dynamic> response;
+    if (walletFailure && options.path == '/wallet') {
+      return ResponseBody.fromString('{"error":"unavailable"}', 500,
+          headers: {Headers.contentTypeHeader: ['application/json']});
+    }
     final wallet =
         verified && users.id == 1
             ? {
@@ -69,6 +76,11 @@ class _WalletApi implements HttpClientAdapter {
         options.path == '/wallets/approvals/approval-a') {
       polls++;
       response = {'status': verified ? 'VERIFIED' : 'AWAITING_APPROVAL'};
+    } else if (options.path == '/devices/totp') {
+      response = {'devices': [{'prefix': 'ABC234', 'deviceName': 'Phone', 'status': revoked ? 'REVOKED' : 'ACTIVE'}]};
+    } else if (options.path == '/devices/totp/ABC234/revoke') {
+      revoked = true;
+      response = {'prefix': 'ABC234', 'status': 'REVOKED'};
     } else if (options.path == '/payment-grants' && options.method == 'POST') {
       grantRequest = Map<String, dynamic>.from(options.data as Map);
       response = {
@@ -95,6 +107,30 @@ class _WalletApi implements HttpClientAdapter {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  testWidgets('wallet opens device management and confirms revocation', (tester) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final users = _Users();
+    final backend = _WalletApi(users)..walletFailure = true;
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.test/api'))..httpClientAdapter = backend;
+    getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
+    getIt.registerSingleton<AuthController>(users);
+    addTearDown(() async { await getIt.reset(); users.dispose(); });
+    await tester.pumpWidget(MaterialApp(theme: AppTheme.light, home: const WalletScreen()));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Wallet status is unavailable'), findsOneWidget);
+    await tester.tap(find.text('Devices'));
+    await tester.pumpAndSettle();
+    expect(find.text('Phone'), findsOneWidget);
+    await tester.tap(find.text('Revoke device'));
+    await tester.pumpAndSettle();
+    expect(backend.revoked, isFalse);
+    await tester.tap(find.text('Revoke device').last);
+    await tester.pumpAndSettle();
+    expect(backend.revoked, isTrue);
+    expect(find.text('Device: REVOKED'), findsOneWidget);
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 
   testWidgets(
     'a pending wallet approval survives restart and stays scoped to its user',
