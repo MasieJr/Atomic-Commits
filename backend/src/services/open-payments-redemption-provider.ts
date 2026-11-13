@@ -11,7 +11,9 @@ import { testWalletUrl } from "./grant-interaction";
 import { createOpenPaymentsClient, lookupWalletAddresses } from "./open-payments";
 import { validateReturnedOutgoingGrant } from "./outgoing-grant-validation";
 import {
+  isMoney,
   parseMinor,
+  ProviderNoIncomingError,
   ProviderRejectedError,
   ProviderUnknownError,
   sameAsset,
@@ -77,9 +79,8 @@ const TRANSIENT_RETRY_DELAY_MS = 1_000;
 const GRANT_FINISH_DEADLINE_MS = 20_000;
 
 /*
- * One retry for calls with NO money effect (incoming payment, quote, resource
- * grants): a network drop costs nothing to retry. Never used for submitting
- * an outgoing payment.
+ * One retry for safe calls such as quotes and resource grants. Never used for
+ * creating incoming or outgoing payments.
  */
 async function retryOnce<T>(work: () => Promise<T>, retryDelayMs: number): Promise<T> {
   try {
@@ -178,6 +179,28 @@ export function createOpenPaymentsRedemptionProvider(
       await closeIncoming(incomingPaymentId, await wallet(merchantWalletAddress));
     },
 
+    async ensureUnpaidIncomingClosed({ incomingPaymentId, merchantWalletAddress }) {
+      const merchant = await wallet(merchantWalletAddress);
+      const url = testWalletUrl(incomingPaymentId);
+      const client = await sdk();
+      const accessToken = await resourceToken(merchant.authServer, "incoming-payment");
+      const read = async () => {
+        const incoming = await client.incomingPayment.get({ url, accessToken });
+        if (incoming.id !== incomingPaymentId || incoming.walletAddress !== merchant.id ||
+            !isMoney(incoming.receivedAmount) || !sameAsset(incoming.receivedAmount, merchant) ||
+            parseMinor(incoming.receivedAmount.value) !== 0n ||
+            (incoming.completed !== true && incoming.completed !== false)) {
+          throw new ProviderUnknownError("The incoming payment cannot be confirmed unpaid.");
+        }
+        return incoming;
+      };
+      if ((await read()).completed) return;
+      await client.incomingPayment.complete({ url, accessToken });
+      if (!(await read()).completed) {
+        throw new ProviderUnknownError("The incoming payment closure is unconfirmed.");
+      }
+    },
+
     async startOutgoingGrant({ wallet: payer, debitLimit, finishUri, clientNonce }) {
       const grantRequestUrl = testWalletUrl(payer.authServer);
       const pending = await retryOnce(async () => (await sdk()).grant.request({ url: grantRequestUrl }, {
@@ -251,22 +274,27 @@ export function createOpenPaymentsRedemptionProvider(
       throw new ProviderUnknownError("The provider did not finalize the grant in time.");
     },
 
-    async prepareQuote({ payerWalletAddress, merchantWalletAddress, merchantReceive, reference }): Promise<PreparedQuote> {
-      const [payer, merchant] = await Promise.all([wallet(payerWalletAddress), wallet(merchantWalletAddress)]);
-      if (payer.id === merchant.id) throw new Error("Payer and merchant wallets must differ.");
-      if (!sameAsset(merchantReceive, merchant)) throw new Error("merchantReceive must use the merchant wallet's asset.");
+    async prepareQuote({ payerWalletAddress, merchantWalletAddress, merchantReceive, reference, onIncomingCreated }): Promise<PreparedQuote> {
+      const { payer, merchant, client, token } = await (async () => {
+        const [payer, merchant] = await Promise.all([wallet(payerWalletAddress), wallet(merchantWalletAddress)]);
+        if (payer.id === merchant.id || !sameAsset(merchantReceive, merchant)) {
+          throw new Error("Payer, merchant or receiving asset is invalid.");
+        }
+        return { payer, merchant, client: await sdk(), token: await resourceToken(merchant.authServer, "incoming-payment") };
+      })().catch(() => { throw new ProviderNoIncomingError("Could not prepare the incoming payment request."); });
 
-      const incoming = await retryOnce(async () => (await sdk()).incomingPayment.create(
-        { url: merchant.resourceServer, accessToken: await resourceToken(merchant.authServer, "incoming-payment") },
+      const incoming = await client.incomingPayment.create(
+        { url: merchant.resourceServer, accessToken: token },
         {
           walletAddress: merchant.id,
           incomingAmount: merchantReceive,
           expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
           metadata: { description: "Atomic Commits offline payment", reference },
         },
-      ), retryDelayMs);
+      );
       testWalletUrl(incoming.id);
       if (incoming.walletAddress !== merchant.id) throw new Error("Incoming payment created for the wrong wallet.");
+      await onIncomingCreated?.(incoming.id);
 
       let quote;
       try {

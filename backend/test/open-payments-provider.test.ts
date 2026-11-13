@@ -16,8 +16,9 @@ const wallets: Record<string, WalletAddress> = {
 const network = () => new Error('fetch failed');
 const refused = () => new OpenPaymentsClientError('refused', { description: 'refused', status: 403 });
 
-function fakeClient(plan: { quoteFailures?: Error[]; incomingFailures?: Error[]; submitError?: Error }) {
+function fakeClient(plan: { quoteFailures?: Error[]; incomingFailures?: Error[]; submitError?: Error; incomingReceived?: string; completionError?: Error }) {
   const calls = { incomingCreate: 0, quoteCreate: 0, incomingComplete: 0, outgoingCreate: 0, grantRequest: 0 };
+  let completed = false;
   const client = {
     grant: {
       request: async () => {
@@ -26,6 +27,8 @@ function fakeClient(plan: { quoteFailures?: Error[]; incomingFailures?: Error[];
       },
     },
     incomingPayment: {
+      get: async () => ({ id: `${T}/incoming/1`, walletAddress: wallets.shop.id, completed,
+        receivedAmount: { value: plan.incomingReceived ?? '0', assetCode: 'EUR', assetScale: 2 } }),
       create: async () => {
         calls.incomingCreate += 1;
         const failure = plan.incomingFailures?.shift();
@@ -34,6 +37,8 @@ function fakeClient(plan: { quoteFailures?: Error[]; incomingFailures?: Error[];
       },
       complete: async () => {
         calls.incomingComplete += 1;
+        completed = true;
+        if (plan.completionError) throw plan.completionError;
         return {};
       },
     },
@@ -94,10 +99,35 @@ test('a definite refusal is not retried', async () => {
   assert.equal(calls.incomingComplete, 1);
 });
 
-test('a network drop on the incoming payment is retried once', async () => {
+test('an unclear incoming creation is never retried', async () => {
   const { provider, calls } = fakeClient({ incomingFailures: [network()] });
-  await provider.prepareQuote(quoteArgs);
-  assert.equal(calls.incomingCreate, 2);
+  await assert.rejects(provider.prepareQuote(quoteArgs));
+  assert.equal(calls.incomingCreate, 1);
+  assert.equal(calls.quoteCreate, 0);
+});
+
+test('a created incoming is recorded before quoting; persistence failure stops quoting', async () => {
+  const { provider, calls } = fakeClient({});
+  await assert.rejects(provider.prepareQuote({ ...quoteArgs, async onIncomingCreated(id) {
+    assert.equal(id, `${T}/incoming/1`);
+    throw new Error('store unavailable');
+  } }), /store unavailable/);
+  assert.equal(calls.incomingCreate, 1);
+  assert.equal(calls.quoteCreate, 0);
+});
+
+test('recovery recognizes an already-closed unpaid incoming after a lost response', async () => {
+  const { provider, calls } = fakeClient({ completionError: network() });
+  const args = { incomingPaymentId: `${T}/incoming/1`, merchantWalletAddress: wallets.shop.id };
+  await assert.rejects(provider.ensureUnpaidIncomingClosed!(args));
+  await provider.ensureUnpaidIncomingClosed!(args);
+  assert.equal(calls.incomingComplete, 1);
+});
+
+test('recovery refuses to close an incoming payment that received funds', async () => {
+  const { provider, calls } = fakeClient({ incomingReceived: '1' });
+  await assert.rejects(provider.ensureUnpaidIncomingClosed!({ incomingPaymentId: `${T}/incoming/1`, merchantWalletAddress: wallets.shop.id }), ProviderUnknownError);
+  assert.equal(calls.incomingComplete, 0);
 });
 
 test('submitting a payment is NEVER retried: unclear = UNKNOWN, refusal = rejected', async () => {

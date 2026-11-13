@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import { MAX_ALLOWED_DRIFT_STEPS, parsePaymentCode, TOTP_LONG_TIME_STEP_MS, TOTP_TIME_STEP_MS, verifyAnySupportedTotpPeriod } from "../domain/payment-engine/totp";
@@ -9,6 +9,7 @@ import { silentLog, type LogEvent } from "./log";
 import {
   isMoney,
   parseMinor,
+  ProviderNoIncomingError,
   ProviderRejectedError,
   sameAsset,
   type Money,
@@ -95,6 +96,8 @@ const REPLAY_GUARD_SECONDS = (TOTP_LONG_TIME_STEP_MS + SHORT_ACCEPTANCE_WINDOW_M
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 /** a SUBMITTING row older than this is treated as UNKNOWN (process died mid-call) */
 const STALE_SUBMITTING_MS = 2 * 60_000;
+const PREPARATION_LEASE_SECONDS = 120;
+const PREPARATION_HEARTBEAT_MS = 15_000;
 /*
  * Accept the code's own 30 s window plus one window either side, so a code
  * shown near the end of its window still works while the merchant types it.
@@ -250,8 +253,9 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   async function finishWithoutDebit(
     attemptId: string, status: "FAILED" | "REJECTED", errorCode: string,
     allowedStatuses: AttemptStatus[] = ["AWAITING_AUTHORIZATION", "SUBMITTING", "PROCESSING", "UNKNOWN"],
+    preparationOwner?: string,
   ) {
-    const ended = await releaseWithoutDebit(attemptId, status, errorCode, allowedStatuses);
+    const ended = await releaseWithoutDebit(attemptId, status, errorCode, allowedStatuses, preparationOwner);
     if (!ended) return;
     log("payment.ended_without_debit", { paymentId: attemptId, status, errorCode });
     /* close the merchant's unpaid incoming payment so it doesn't linger as EXPIRED (best effort) */
@@ -274,12 +278,15 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     }
   }
 
-  async function releaseWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string, allowedStatuses: AttemptStatus[]) {
+  async function releaseWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string, allowedStatuses: AttemptStatus[], preparationOwner?: string) {
     return inTransaction(async (db) => {
       const changed = await db.query(
         `UPDATE app_private.payment_attempts SET status = $2, error_code = $3, updated_at = now()
-          WHERE id = $1 AND status = ANY($4::text[]) RETURNING id`,
-        [attemptId, status, errorCode, allowedStatuses],
+          WHERE id = $1 AND status = ANY($4::text[])
+            AND (status <> 'AWAITING_AUTHORIZATION' OR
+                 (preparation_owner = $5 AND preparation_lease_until > clock_timestamp()))
+          RETURNING id`,
+        [attemptId, status, errorCode, allowedStatuses, preparationOwner ?? null],
       );
       if (!changed.rows[0]) return false;
       await db.query(
@@ -294,6 +301,70 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       );
       return true;
     });
+  }
+
+  function heartbeatPreparation(attemptId: string, owner: string): () => void {
+    let inFlight = false;
+    const timer = setInterval(() => {
+      if (inFlight) return;
+      inFlight = true;
+      void pool.query(
+        `UPDATE app_private.payment_attempts
+            SET preparation_lease_until = clock_timestamp() + make_interval(secs => $3)
+          WHERE id = $1 AND preparation_owner = $2 AND status = 'AWAITING_AUTHORIZATION'
+            AND preparation_lease_until > clock_timestamp()`,
+        [attemptId, owner, PREPARATION_LEASE_SECONDS],
+      ).catch(() => log("payment.preparation_heartbeat_failed", { paymentId: attemptId }))
+        .finally(() => { inFlight = false; });
+    }, PREPARATION_HEARTBEAT_MS);
+    timer.unref();
+    return () => clearInterval(timer);
+  }
+
+  async function recoverAbandonedPreparation(): Promise<void> {
+    const { rows } = await pool.query<{ id: string }>(
+      `SELECT id FROM app_private.payment_attempts
+        WHERE status = 'AWAITING_AUTHORIZATION' AND preparation_lease_until <= clock_timestamp()
+          AND preparation_phase IN ('RESERVED', 'INCOMING_KNOWN', 'RECOVERING')
+        ORDER BY preparation_lease_until, id LIMIT 20`,
+    );
+    for (const { id } of rows) {
+      const owner = randomUUID();
+      try {
+        const { rows: [attempt] } = await pool.query<{
+          provider_incoming_ref: string | null;
+          receiving_wallet_snapshot: string | null;
+        }>(
+          `UPDATE app_private.payment_attempts
+              SET preparation_owner = $2, preparation_phase = 'RECOVERING',
+                  preparation_lease_until = clock_timestamp() + make_interval(secs => $3)
+            WHERE id = $1 AND status = 'AWAITING_AUTHORIZATION'
+              AND preparation_lease_until <= clock_timestamp()
+              AND preparation_phase IN ('RESERVED', 'INCOMING_KNOWN', 'RECOVERING')
+            RETURNING provider_incoming_ref, receiving_wallet_snapshot`,
+          [id, owner, PREPARATION_LEASE_SECONDS],
+        );
+        if (!attempt) continue;
+        const stopHeartbeat = heartbeatPreparation(id, owner);
+        try {
+          if (attempt.provider_incoming_ref) {
+            if (!attempt.receiving_wallet_snapshot || !provider.ensureUnpaidIncomingClosed) {
+              throw new Error("Cannot prove the incoming payment can be closed");
+            }
+            await provider.ensureUnpaidIncomingClosed({
+              incomingPaymentId: attempt.provider_incoming_ref,
+              merchantWalletAddress: attempt.receiving_wallet_snapshot,
+            });
+          }
+          const ended = await releaseWithoutDebit(id, "FAILED", "PREPARATION_ABANDONED", ["AWAITING_AUTHORIZATION"], owner);
+          if (ended) log("payment.preparation_recovered", { paymentId: id });
+        } finally {
+          stopHeartbeat();
+        }
+      } catch {
+        log("payment.preparation_recovery_deferred", { paymentId: id });
+      }
+    }
   }
 
   async function markUnknown(attemptId: string) {
@@ -582,6 +653,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     const codeDigests = [...digestsByVersion.values()];
 
     /* 3. claim + reservation, atomically */
+    const preparationOwner = randomUUID();
     let attemptId: string;
     let receivingWalletAddress: string;
     let grant: {
@@ -684,12 +756,15 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           attempt = await db.query(
             `INSERT INTO app_private.payment_attempts
                (payer_user_id, merchant_id, grant_id, device_id, idempotency_key, request_fingerprint, status,
-                merchant_receive_value, merchant_receive_asset_code, merchant_receive_asset_scale, receiving_wallet_snapshot, receiving_wallet_explicit)
-             VALUES ($1, $2, $3, $4, $5, $6, 'AWAITING_AUTHORIZATION', $7, $8, $9, $10, $11)
+                 merchant_receive_value, merchant_receive_asset_code, merchant_receive_asset_scale, receiving_wallet_snapshot, receiving_wallet_explicit,
+                 preparation_phase, preparation_owner, preparation_lease_until)
+              VALUES ($1, $2, $3, $4, $5, $6, 'AWAITING_AUTHORIZATION', $7, $8, $9, $10, $11,
+                      'RESERVED', $12, clock_timestamp() + make_interval(secs => $13))
              RETURNING id`,
             [
               device.payer_user_id, merchant.id, g.id, device.id, key, fingerprint,
               receive.value, receive.assetCode, receive.assetScale, receivingWalletAddress, body.receivingWalletAddress !== undefined,
+              preparationOwner, PREPARATION_LEASE_SECONDS,
             ],
           );
         } catch (error) {
@@ -738,6 +813,20 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     }
 
     /* 4. fresh quote; the payer debit must fit what we reserved */
+    const currentPayment = async (): Promise<RedemptionResult> => ({ payment: toView(await loadAttempt(attemptId)), created: true });
+    const failPreparation = (status: "FAILED" | "REJECTED", errorCode: string) =>
+      finishWithoutDebit(attemptId, status, errorCode, ["AWAITING_AUTHORIZATION"], preparationOwner);
+    const started = await pool.query(
+      `UPDATE app_private.payment_attempts SET preparation_phase = 'CREATING_INCOMING'
+        WHERE id = $1 AND preparation_owner = $2 AND preparation_phase = 'RESERVED'
+          AND status = 'AWAITING_AUTHORIZATION' AND preparation_lease_until > clock_timestamp()
+        RETURNING id`, [attemptId, preparationOwner],
+    );
+    if (!started.rows[0]) return currentPayment();
+    const stopHeartbeat = heartbeatPreparation(attemptId, preparationOwner);
+    return prepareAndSubmit().finally(stopHeartbeat);
+
+    async function prepareAndSubmit(): Promise<RedemptionResult> {
     let quote;
     try {
       quote = await provider.prepareQuote({
@@ -745,21 +834,46 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         merchantWalletAddress: receivingWalletAddress,
         merchantReceive: receive,
         reference: attemptId,
+        onIncomingCreated: async (incomingPaymentId) => {
+          const saved = await pool.query(
+            `UPDATE app_private.payment_attempts
+                SET provider_incoming_ref = $3, preparation_phase = 'INCOMING_KNOWN', updated_at = now()
+              WHERE id = $1 AND preparation_owner = $2 AND preparation_phase = 'CREATING_INCOMING'
+                AND status = 'AWAITING_AUTHORIZATION' AND preparation_lease_until > clock_timestamp()
+              RETURNING id`, [attemptId, preparationOwner, incomingPaymentId],
+          );
+          if (!saved.rows[0]) throw new Error("Payment preparation lease lost");
+        },
       });
-    } catch {
-      await finishWithoutDebit(attemptId, "FAILED", "QUOTE_FAILED");
-      return { payment: toView(await loadAttempt(attemptId)), created: true };
+    } catch (error) {
+      if (error instanceof ProviderNoIncomingError) {
+        await failPreparation("FAILED", "QUOTE_FAILED");
+        return currentPayment();
+      }
+      // A lost incoming-create response is not evidence that no resource exists.
+      // A known incoming payment can be cleaned up by the recovery worker.
+      await pool.query(
+        `UPDATE app_private.payment_attempts SET preparation_lease_until = clock_timestamp()
+          WHERE id = $1 AND preparation_owner = $2 AND status = 'AWAITING_AUTHORIZATION'`,
+        [attemptId, preparationOwner],
+      );
+      log("payment.quote_interrupted", { paymentId: attemptId });
+      return currentPayment();
     }
     /* remember the provider refs first, so a rejected quote's incoming payment can be closed */
-    await pool.query(
-      `UPDATE app_private.payment_attempts SET provider_incoming_ref = $2, provider_quote_ref = $3, updated_at = now()
-        WHERE id = $1`,
-      [attemptId, quote.incomingPaymentId, quote.quoteId],
+    const recorded = await pool.query(
+      `UPDATE app_private.payment_attempts SET provider_incoming_ref = $2, provider_quote_ref = $3,
+              preparation_phase = 'INCOMING_KNOWN', updated_at = now()
+        WHERE id = $1 AND preparation_owner = $4 AND status = 'AWAITING_AUTHORIZATION'
+          AND preparation_lease_until > clock_timestamp()
+          AND (provider_incoming_ref IS NULL OR provider_incoming_ref = $2) RETURNING id`,
+      [attemptId, quote.incomingPaymentId, quote.quoteId, preparationOwner],
     );
+    if (!recorded.rows[0]) return currentPayment();
     const debit = parseMinor(quote.debit.value);
     if (quote.expiresAtEpochMs !== undefined &&
         (!Number.isSafeInteger(quote.expiresAtEpochMs) || quote.expiresAtEpochMs <= now())) {
-      await finishWithoutDebit(attemptId, "REJECTED", "QUOTE_EXPIRED");
+      await failPreparation("REJECTED", "QUOTE_EXPIRED");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
     if (
@@ -767,21 +881,23 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       debit <= 0n ||
       !sameAsset(quote.debit, { assetCode: grant.asset_code, assetScale: grant.asset_scale })
     ) {
-      await finishWithoutDebit(attemptId, "REJECTED", "QUOTE_ASSET_MISMATCH");
+      await failPreparation("REJECTED", "QUOTE_ASSET_MISMATCH");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
     if (debit > grant.reserved) {
-      await finishWithoutDebit(attemptId, "REJECTED", "QUOTE_EXCEEDS_LIMIT");
+      await failPreparation("REJECTED", "QUOTE_EXCEEDS_LIMIT");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
-    await inTransaction(async (db) => {
-      await db.query(
+    const sized = await inTransaction(async (db) => {
+      const updated = await db.query(
         `UPDATE app_private.payment_attempts
             SET provider_incoming_ref = $2, provider_quote_ref = $3, payer_debit_value = $4,
                 payer_debit_asset_code = $5, payer_debit_asset_scale = $6, updated_at = now()
-          WHERE id = $1`,
-        [attemptId, quote.incomingPaymentId, quote.quoteId, debit.toString(), quote.debit.assetCode, quote.debit.assetScale],
+          WHERE id = $1 AND preparation_owner = $7 AND status = 'AWAITING_AUTHORIZATION'
+            AND preparation_lease_until > clock_timestamp() RETURNING id`,
+        [attemptId, quote.incomingPaymentId, quote.quoteId, debit.toString(), quote.debit.assetCode, quote.debit.assetScale, preparationOwner],
       );
+      if (!updated.rows[0]) return false;
       /* shrink the hold to the real debit */
       await db.query(
         `UPDATE app_private.spending_reservations r SET amount = $2, updated_at = now()
@@ -789,7 +905,9 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           WHERE r.claim_id = c.id AND c.payment_attempt_id = $1`,
         [attemptId, debit.toString()],
       );
+      return true;
     });
+    if (!sized) return currentPayment();
 
     /* 5. submit exactly once */
     let authority: OutgoingAuthority;
@@ -798,7 +916,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         "SELECT grant_id FROM app_private.payment_attempts WHERE id = $1", [attemptId],
       )).rows[0].grant_id);
     } catch (error) {
-      await finishWithoutDebit(attemptId, "FAILED", error instanceof ApiError && error.code ? error.code : "GRANT_NOT_SPENDABLE");
+      await failPreparation("FAILED", error instanceof ApiError && error.code ? error.code : "GRANT_NOT_SPENDABLE");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
     const moved = await inTransaction(async (db) => {
@@ -818,12 +936,13 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           (quote.expiresAtEpochMs !== undefined && quote.expiresAtEpochMs <= at)) return false;
       const update = await db.query(
         `UPDATE app_private.payment_attempts SET status = 'SUBMITTING', updated_at = now()
-          WHERE id = $1 AND status = 'AWAITING_AUTHORIZATION' RETURNING id`, [attemptId],
+          WHERE id = $1 AND status = 'AWAITING_AUTHORIZATION' AND preparation_phase = 'INCOMING_KNOWN'
+            AND preparation_owner = $2 AND preparation_lease_until > clock_timestamp() RETURNING id`, [attemptId, preparationOwner],
       );
       return Boolean(update.rows[0]);
     });
     if (!moved) {
-      await finishWithoutDebit(attemptId, "FAILED", "GRANT_NOT_SPENDABLE", ["AWAITING_AUTHORIZATION"]);
+      await failPreparation("FAILED", "GRANT_NOT_SPENDABLE");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
     try {
@@ -846,6 +965,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     /* 6. short confirmation wait; the merchant can keep polling GET /api/payments/:id */
     await confirm(attemptId, now() + confirmTimeoutMs);
     return { payment: toView(await loadAttempt(attemptId)), created: true };
+    }
   }
 
   /* payer or merchant of this payment only; a read may reconcile, never re-submit */
@@ -887,6 +1007,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
    * gets one read-only provider check. Nothing is ever re-submitted.
    */
   async function reconcilePending(): Promise<{ checked: number }> {
+    await recoverAbandonedPreparation();
     const availableVersions = [...options.dataKeys.keys()];
     /* a rotation that never finished: the old token may be dead and the new one unknown */
     const stuck = await pool.query(
