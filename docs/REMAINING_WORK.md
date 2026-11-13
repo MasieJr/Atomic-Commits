@@ -5,16 +5,16 @@ Keep existing payment attempts, provider authority, and unrelated working-tree
 changes intact. A submitted or unknown payment must never be retried as a new
 debit merely to complete a release.
 
-## Release the current changes
+## Current release and future deployments
 
-- Build the web app and backend from the same reviewed commit. Deploy the app
-  and backend together: the new permission screen describes the new 30-day
-  app limit, which the older backend does not enforce.
+- The web app and matching backend changes from commit `70878d0` are deployed.
+  The app and backend must remain coordinated: the permission screen describes
+  the 30-day app limit enforced by this backend.
 - Before restarting the backend, stop new payment submissions and allow
   in-flight requests to finish. Preserve unknown attempts and their reservations.
   Back up the installed files and retain a rollback path for both components.
-- Check the public app, service health, authorization failures, and actual
-  deployed asset versions. Obtain permission before making another live payment.
+- Check the public app, service health, authorization failures, and deployed
+  asset versions. Obtain permission before making another live payment.
 - Static JavaScript compression is configured separately in
   `deploy/azure-vm/nginx.conf.example`. The public server has that configuration.
 
