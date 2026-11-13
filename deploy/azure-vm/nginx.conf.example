@@ -38,6 +38,9 @@ server {
         proxy_read_timeout 120s;
     }
     location / {
+        gzip on;
+        gzip_types application/javascript application/json application/wasm text/css image/svg+xml;
+        gzip_vary on;
         try_files $uri $uri/ /index.html;
     }
 }
