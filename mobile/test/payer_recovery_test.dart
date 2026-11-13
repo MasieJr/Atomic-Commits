@@ -30,6 +30,7 @@ class _User extends AuthController {
 
 class _DeviceApi implements HttpClientAdapter {
   bool revoked = false;
+  bool timeoutEnrollment = true;
 
   @override
   Future<ResponseBody> fetch(
@@ -49,15 +50,34 @@ class _DeviceApi implements HttpClientAdapter {
             'validUntil': DateTime.now()
                 .add(const Duration(hours: 1))
                 .toIso8601String(),
-            'remaining': {'value': '1000'},
+            'remaining': {'value': '1000', 'assetCode': 'ZAR', 'assetScale': 2},
+            'perPaymentMaxDebit': {
+              'value': '500',
+              'assetCode': 'ZAR',
+              'assetScale': 2,
+            },
           },
         ],
       };
     } else if (options.path == '/devices/totp/enroll') {
-      throw DioException(
-        requestOptions: options,
-        type: DioExceptionType.receiveTimeout,
-      );
+      if (timeoutEnrollment) {
+        throw DioException(
+          requestOptions: options,
+          type: DioExceptionType.receiveTimeout,
+        );
+      }
+      response = {
+        'version': 1,
+        'prefix': 'ABC234',
+        'secret': 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+        'algorithm': 'SHA1',
+        'digits': 6,
+        'periodSeconds': 30,
+        'expiresAtEpochMs': DateTime.now()
+            .add(const Duration(hours: 1))
+            .millisecondsSinceEpoch,
+        'revoked': false,
+      };
     } else if (options.path == '/devices/totp') {
       response = {
         'devices': [
@@ -109,6 +129,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Enroll this device'));
       await tester.pumpAndSettle();
+      expect(
+        find.textContaining('Maximum ZAR 5.00 per payment'),
+        findsOneWidget,
+      );
       await tester.tap(
         find.textContaining('https://ilp.interledger-test.dev/a'),
       );
@@ -128,4 +152,31 @@ void main() {
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
+
+  testWidgets('the payment code shows the selected permission limit', (
+    tester,
+  ) async {
+    FlutterSecureStorage.setMockInitialValues({});
+    final backend = _DeviceApi()..timeoutEnrollment = false;
+    final user = _User();
+    final dio = Dio(BaseOptions(baseUrl: 'https://api.example.test/api'))
+      ..httpClientAdapter = backend;
+    getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
+    getIt.registerSingleton<AuthController>(user);
+    addTearDown(() async {
+      await getIt.reset();
+      user.dispose();
+    });
+    await tester.pumpWidget(const MaterialApp(home: PayerHomeScreen()));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Enroll this device'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Maximum ZAR 5.00 per payment'));
+    await tester.pumpAndSettle();
+    expect(
+      find.text('Device limit at enrollment: ZAR 5.00 per payment'),
+      findsOneWidget,
+    );
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
 }

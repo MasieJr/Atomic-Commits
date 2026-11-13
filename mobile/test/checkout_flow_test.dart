@@ -57,6 +57,20 @@ class _Backend implements HttpClientAdapter {
     } else if (options.path == '/merchant') {
       expect(options.data, {'displayName': 'User B'});
       result = {'status': 'ACTIVE'};
+    } else if (options.path == '/devices/totp/ABC234/status') {
+      result = {
+        'status': 'ACTIVE',
+        'grantStatus': 'ACTIVE',
+        'authorizationId': 'grant-1',
+      };
+    } else if (options.path == '/payment-grants/grant-1') {
+      result = {
+        'perPaymentMaxDebit': {
+          'value': '20000',
+          'assetCode': 'ZAR',
+          'assetScale': 2,
+        },
+      };
     } else if (options.path == '/offline-redemptions') {
       redemption = Map<String, dynamic>.from(options.data as Map);
       idempotencyKey = options.headers['Idempotency-Key'] as String?;
@@ -99,6 +113,7 @@ void main() {
       ..httpClientAdapter = backend;
     getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
     getIt.registerSingleton<AuthController>(_User());
+    addTearDown(() async => getIt.reset());
     return backend;
   }
 
@@ -128,6 +143,19 @@ void main() {
         findsOneWidget,
       );
       expect(backend.requests, 0);
+      expect(find.textContaining('Device limit unavailable'), findsOneWidget);
+      await tester.ensureVisible(find.text('Check device status online'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Check device status online'));
+      await tester.pumpAndSettle();
+      expect(
+        find.text('Device limit at enrollment: ZAR 200.00 per payment'),
+        findsOneWidget,
+      );
+      expect(
+        (await const OfflineProfileStore().read(22))?.permissionLimit,
+        'ZAR 200.00',
+      );
       await tester.pumpWidget(const SizedBox.shrink());
       await getIt.reset();
     },

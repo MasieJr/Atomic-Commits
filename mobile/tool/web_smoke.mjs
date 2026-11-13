@@ -66,7 +66,8 @@ async function mockApi(page) {
     } else if (endpoint === '/payment-grants') {
       result = { grants: request.headers().authorization !== 'Bearer mock-a' ? [] : [{ authorizationId: '00000000-0000-4000-8000-000000000001', status: 'ACTIVE',
         authoritySource: 'PROVIDER', payerWalletAddress: 'https://ilp.interledger-test.dev/a',
-        validUntil: new Date(Date.now() + 3_600_000).toISOString(), remaining: { value: '5000', assetCode: 'USD', assetScale: 2 } }] };
+        validUntil: new Date(Date.now() + 3_600_000).toISOString(), remaining: { value: '5000', assetCode: 'USD', assetScale: 2 },
+        perPaymentMaxDebit: { value: '500', assetCode: 'USD', assetScale: 2 } }] };
     } else if (endpoint === '/devices/totp/enroll') {
       enrollments++;
       status = 201;

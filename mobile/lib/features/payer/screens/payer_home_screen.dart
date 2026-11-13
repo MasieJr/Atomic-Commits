@@ -4,6 +4,7 @@ import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
+import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:atomic_commits/features/payer/offline_profile.dart';
 import 'package:dio/dio.dart';
@@ -111,7 +112,10 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
                   Map<String, dynamic>.from(grant as Map),
                 ),
                 child: Text(
-                  '${grant['payerWalletAddress']}\nValid until ${grant['validUntil']}',
+                  '${grant['payerWalletAddress']}\n'
+                  'Maximum ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['perPaymentMaxDebit'] as Map)).formatted} per payment\n'
+                  'Remaining ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['remaining'] as Map)).formatted}\n'
+                  'Valid until ${grant['validUntil']}',
                 ),
               ),
           ],
@@ -130,8 +134,16 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
           'deviceName': 'Atomic Commit mobile',
         },
       );
-      final profile = OfflineProfile.fromJson(
+      final packetProfile = OfflineProfile.fromJson(
         Map<String, dynamic>.from(packet.data as Map),
+      );
+      final profile = OfflineProfile(
+        prefix: packetProfile.prefix,
+        secret: packetProfile.secret,
+        expiresAtEpochMs: packetProfile.expiresAtEpochMs,
+        permissionLimit: PaymentAmount.fromJson(
+          Map<String, dynamic>.from(selected['perPaymentMaxDebit'] as Map),
+        ).formatted,
       );
       try {
         await _store.save(_userId, profile);
@@ -259,11 +271,27 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             _message = 'This device or its spending permission was revoked or is no longer active.';
           });
         }
-      } else if (mounted) {
-        setState(
-          () => _message =
-              'The server reports this device and permission are active.',
+      } else {
+        final grant = await _api.get(
+          '/payment-grants/${response.data['authorizationId']}',
         );
+        final limit = PaymentAmount.fromJson(
+          Map<String, dynamic>.from(grant.data['perPaymentMaxDebit'] as Map),
+        ).formatted;
+        final updated = OfflineProfile(
+          prefix: profile.prefix,
+          secret: profile.secret,
+          expiresAtEpochMs: profile.expiresAtEpochMs,
+          permissionLimit: limit,
+        );
+        await _store.save(_userId, updated);
+        if (mounted && getIt<AuthController>().user?.id == _userId) {
+          setState(() {
+            _profile = updated;
+            _message =
+                'The server reports this device and permission are active.';
+          });
+        }
       }
     } catch (error) {
       if (mounted) setState(() => _message = _errorMessage(error));
@@ -365,6 +393,14 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
               ),
             ),
             const SizedBox(height: 12),
+            if (_profile!.permissionLimit != null)
+              Text(
+                'Device limit at enrollment: ${_profile!.permissionLimit} per payment',
+              )
+            else
+              const Text(
+                'Device limit unavailable. Check device status online to see it.',
+              ),
             const Text(
               'Generated locally without internet. Revocation cannot be checked while offline.',
               style: TextStyle(color: AppColours.textSecondary),
@@ -376,6 +412,9 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             TextButton(
               onPressed: _busy ? null : _revoke,
               child: const Text('Revoke this device'),
+            ),
+            const Text(
+              'To use a new spending permission, revoke this device and enroll again.',
             ),
           ],
           if (_message != null)

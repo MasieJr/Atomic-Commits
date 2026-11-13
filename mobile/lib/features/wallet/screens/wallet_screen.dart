@@ -6,6 +6,7 @@ import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:atomic_commits/core/money.dart';
+import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
@@ -89,9 +90,7 @@ class _WalletScreenState extends State<WalletScreen>
         final approval = await _api.get(path);
         final status = approval.data['status'] as String;
         if (status == 'VERIFIED' || status == 'APPROVED') {
-          message = status == 'VERIFIED'
-              ? 'Wallet verified.'
-              : 'Spending permission approved.';
+          message = status == 'VERIFIED' ? 'Wallet verified.' : 'Spending permission approved. Enroll your device against it from Send.';
           _approvalId = null;
           _authorizationUrl = null;
           await _storage.delete(key: _pendingKey);
@@ -427,8 +426,9 @@ class _WalletScreenState extends State<WalletScreen>
                       '${grant['status']} · ${grant['authoritySource']}',
                     ),
                     subtitle: Text(
-                      'Allowance: ${grant['cumulativeCap']['value']} minor units\n'
-                      'Per payment: ${grant['perPaymentMaxDebit']['value']} minor units\n'
+                      'Allowance: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['cumulativeCap'] as Map)).formatted}\n'
+                      'Per payment: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['perPaymentMaxDebit'] as Map)).formatted}\n'
+                      'Remaining: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['remaining'] as Map)).formatted}\n'
                       'Valid until: ${grant['validUntil']}',
                     ),
                   ),

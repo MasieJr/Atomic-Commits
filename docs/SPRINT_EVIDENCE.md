@@ -15,17 +15,19 @@ Earlier backend-only Test Wallet experiments are recorded in [payment-proofs.md]
 
 ## Application payment receipts
 
-The deployed backend recorded two payment attempts during this sprint. One ended `FAILED / PROVIDER_FAILED`; the other ended `REJECTED / QUOTE_EXCEEDS_LIMIT`. Neither is counted as a successful payment. Fill this table only after the provider's incoming-payment resource confirms the amount. Use redacted references.
+Earlier attempts ended `FAILED / PROVIDER_FAILED` or `REJECTED / QUOTE_EXCEEDS_LIMIT`. The first successful transfer below was independently checked against the provider's outgoing and incoming resources. The incoming resource was complete and its received amount matched the app record. The outgoing resource was not failed, matched the intended wallets and quote, and reported the recorded sent amount. The temporary read-only provider grant was cancelled afterward.
 
 | Transaction | Result | Received amount and asset | Redacted provider incoming reference | App payment status |
 | --- | --- | --- | --- | --- |
-| 1 | NOT TESTED | | | |
+| 1 | PASS | EUR 5.00 | SHA-256 prefix `226ca29c4454a74e` | SUCCEEDED |
 | 2 | NOT TESTED | | | |
 | 3 | NOT TESTED | | | |
 | 4 | NOT TESTED | | | |
 | 5 | NOT TESTED | | | |
 
 Replay rejection and absence of a second debit: **NOT TESTED**.
+
+Transaction 1 was created at `2026-11-13T09:28:43.912Z` and completed at `2026-11-13T09:28:50.660Z`. The provider reported ZAR 92.06 sent. The reference is a hash prefix, not the raw provider URL. The user's device connectivity during code generation was not independently observed.
 
 ## Automated checks
 

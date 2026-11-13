@@ -48,4 +48,16 @@ void main() {
       throwsFormatException,
     );
   });
+
+  test('a stored device can display its original per-payment limit', () {
+    final saved = OfflineProfile.fromJson({
+      ...profile.toJson(),
+      'permissionLimit': 'ZAR 200.00',
+    });
+    expect(
+      OfflineProfile.fromJson(saved.toJson()).permissionLimit,
+      'ZAR 200.00',
+    );
+    expect(OfflineProfile.fromJson(profile.toJson()).permissionLimit, isNull);
+  });
 }

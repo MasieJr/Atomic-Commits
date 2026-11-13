@@ -16,16 +16,19 @@ class OfflineProfile {
     required this.prefix,
     required this.secret,
     required this.expiresAtEpochMs,
+    this.permissionLimit,
   });
 
   final String prefix;
   final String secret;
   final int expiresAtEpochMs;
+  final String? permissionLimit;
 
   factory OfflineProfile.fromJson(Map<String, dynamic> packet) {
     final prefix = packet['prefix'];
     final secret = packet['secret'];
     final expires = packet['expiresAtEpochMs'];
+    final permissionLimit = packet['permissionLimit'];
     if (packet['version'] != 1 ||
         packet['algorithm'] != 'SHA1' ||
         packet['digits'] != 6 ||
@@ -35,13 +38,15 @@ class OfflineProfile {
         !RegExp(r'^[A-Z0-9]{4,12}$').hasMatch(prefix) ||
         secret is! String ||
         !RegExp(r'^[A-Z2-7]{32}$').hasMatch(secret) ||
-        expires is! int) {
+        expires is! int ||
+        (permissionLimit != null && permissionLimit is! String)) {
       throw const FormatException('Invalid offline device profile.');
     }
     return OfflineProfile(
       prefix: prefix,
       secret: secret,
       expiresAtEpochMs: expires,
+      permissionLimit: permissionLimit as String?,
     );
   }
 
@@ -54,6 +59,7 @@ class OfflineProfile {
     'periodSeconds': 30,
     'expiresAtEpochMs': expiresAtEpochMs,
     'revoked': false,
+    if (permissionLimit != null) 'permissionLimit': permissionLimit,
   };
 
   OfflineCode codeAt(DateTime time) {
