@@ -8,6 +8,7 @@ import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/payer/device_settings_sheet.dart';
 import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -153,26 +154,25 @@ class _WalletScreenState extends State<WalletScreen>
 
   Future<void> _connectWallet() async {
     var input = '';
-    final address = await showDialog<String>(
+    final address = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Connect a wallet'),
-        content: TextField(
-          onChanged: (value) => input = value,
-          keyboardType: TextInputType.url,
-          decoration: const InputDecoration(
-            labelText: 'Test Wallet address',
-            hintText: r'$ilp.interledger-test.dev/name',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, input.trim()),
-            child: const Text('Verify ownership'),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _walletSheet(
+        context,
+        title: 'Connect a wallet',
+        action: 'Verify ownership',
+        onContinue: () => Navigator.pop(context, input.trim()),
+        children: [
+          const Text('Enter your Test Wallet address to verify ownership.'),
+          const SizedBox(height: 16),
+          TextField(
+            onChanged: (value) => input = value,
+            keyboardType: TextInputType.url,
+            decoration: const InputDecoration(
+              labelText: 'Test Wallet address',
+              hintText: r'$ilp.interledger-test.dev/name',
+            ),
           ),
         ],
       ),
@@ -193,42 +193,30 @@ class _WalletScreenState extends State<WalletScreen>
     if (wallet == null) return;
     var cap = '';
     var limit = '';
-    final result = await showDialog<(String, String)>(
+    final result = await showModalBottomSheet<(String, String)>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Spending permission'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Text(
-              'Set limits in ${wallet['assetCode']}. Your wallet provider will ask for consent.',
-            ),
-            TextField(
-              onChanged: (value) => cap = value,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: const InputDecoration(labelText: 'Total allowance'),
-            ),
-            TextField(
-              onChanged: (value) => limit = value,
-              keyboardType: const TextInputType.numberWithOptions(
-                decimal: true,
-              ),
-              decoration: const InputDecoration(
-                labelText: 'Maximum per payment',
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _walletSheet(
+        context,
+        title: 'Spending permission',
+        action: 'Review',
+        onContinue: () => Navigator.pop(context, (cap, limit)),
+        children: [
+          Text(
+            'Set limits in ${wallet['assetCode']}. Your wallet provider will ask for consent.',
           ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, (cap, limit)),
-            child: const Text('Review'),
+          const SizedBox(height: 16),
+          TextField(
+            onChanged: (value) => cap = value,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Total allowance'),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            onChanged: (value) => limit = value,
+            keyboardType: const TextInputType.numberWithOptions(decimal: true),
+            decoration: const InputDecoration(labelText: 'Maximum per payment'),
           ),
         ],
       ),
@@ -245,21 +233,18 @@ class _WalletScreenState extends State<WalletScreen>
       );
       return;
     }
-    final approved = await showDialog<bool>(
+    final approved = await showModalBottomSheet<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Review permission'),
-        content: Text(
-          'Allow up to ${result.$1} ${wallet['assetCode']} in total, with a maximum of ${result.$2} ${wallet['assetCode']} per payment. Continue to your wallet provider to approve.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: const Text('Continue'),
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _walletSheet(
+        context,
+        title: 'Review permission',
+        action: 'Continue',
+        onContinue: () => Navigator.pop(context, true),
+        children: [
+          Text(
+            'Allow up to ${result.$1} ${wallet['assetCode']} in total, with a maximum of ${result.$2} ${wallet['assetCode']} per payment. Continue to your wallet provider to approve.',
           ),
         ],
       ),
@@ -272,6 +257,69 @@ class _WalletScreenState extends State<WalletScreen>
         'perPaymentMaxDebit': perPayment,
       }, 'grant');
     }
+  }
+
+  Widget _walletSheet(
+    BuildContext context, {
+    required String title,
+    required String action,
+    required VoidCallback onContinue,
+    required List<Widget> children,
+  }) {
+    return Padding(
+      padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColours.paperTop,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColours.orange,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    color: AppColours.ink,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                ...children,
+                const SizedBox(height: 24),
+                FilledButton(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: AppColours.cobalt,
+                    foregroundColor: Colors.white,
+                  ),
+                  onPressed: onContinue,
+                  child: Text(action),
+                ),
+                TextButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Cancel'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _beginApproval(
@@ -342,6 +390,20 @@ class _WalletScreenState extends State<WalletScreen>
                 color: AppColours.ink,
                 fontWeight: FontWeight.w800,
               ),
+            ),
+            const SizedBox(height: 24),
+            OutlinedButton.icon(
+              onPressed: () {
+                if (getIt<AuthController>().user?.id != _ownerId) return;
+                showModalBottomSheet<void>(
+                  context: context,
+                  isScrollControlled: true,
+                  backgroundColor: Colors.transparent,
+                  builder: (_) => DeviceSettingsSheet(ownerId: _ownerId),
+                );
+              },
+              icon: const Icon(Icons.phonelink_setup_outlined),
+              label: const Text('Devices'),
             ),
             const SizedBox(height: 24),
             if (_loading)

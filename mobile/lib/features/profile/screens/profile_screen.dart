@@ -97,42 +97,16 @@ class ProfileScreen extends StatelessWidget {
           icon: Icons.badge_outlined,
           title: 'Account details',
           subtitle: 'Name and email address',
-          onTap: () => showDialog<void>(
-            context: context,
-            builder: (dialogContext) => AlertDialog(
-              title: const Text('Account details'),
-              content: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  const Text(
-                    'NAME',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: AppColours.textSecondary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  Text(name),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'EMAIL',
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: AppColours.textSecondary,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  SelectableText(email),
-                ],
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(dialogContext),
-                  child: const Text('Done'),
-                ),
+          onTap: () => _showSheet(
+            context,
+            title: 'Account details',
+            icon: Icons.badge_outlined,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _Detail(label: 'NAME', value: name),
+                const SizedBox(height: 16),
+                _Detail(label: 'EMAIL', value: email, selectable: true),
               ],
             ),
           ),
@@ -141,9 +115,14 @@ class ProfileScreen extends StatelessWidget {
           icon: Icons.help_outline_rounded,
           title: 'About',
           subtitle: 'Atomic Commits',
-          onTap: () => showAboutDialog(
-            context: context,
-            applicationName: 'Atomic Commits',
+          onTap: () => _showSheet(
+            context,
+            title: 'About',
+            icon: Icons.help_outline_rounded,
+            child: const Text(
+              'Atomic Commits',
+              style: TextStyle(fontSize: 16, color: AppColours.ink),
+            ),
           ),
         ),
         const SizedBox(height: 20),
@@ -165,32 +144,154 @@ class ProfileScreen extends StatelessWidget {
   }
 
   void _confirmLogout(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Sign out?'),
-        content: const Text(
-          'Are you sure you want to sign out of your account?',
+    _showSheet(
+      context,
+      title: 'Sign out?',
+      icon: Icons.logout_rounded,
+      child: const Text('Are you sure you want to sign out of your account?'),
+      actions: [
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
+        FilledButton(
+          style: FilledButton.styleFrom(backgroundColor: AppColours.orange),
+          onPressed: () {
+            Navigator.pop(context);
+            _logout(context);
+          },
+          child: const Text('Sign out'),
+        ),
+      ],
+    );
+  }
+
+  void _showSheet(
+    BuildContext context, {
+    required String title,
+    required IconData icon,
+    required Widget child,
+    List<Widget> actions = const [],
+  }) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) => SafeArea(
+        child: Padding(
+          padding: EdgeInsets.only(
+            left: 12,
+            right: 12,
+            bottom: MediaQuery.of(sheetContext).viewInsets.bottom + 12,
           ),
-          TextButton(
-            onPressed: () {
-              Navigator.pop(dialogContext);
-              _logout(context);
-            },
-            child: const Text(
-              'Sign out',
-              style: TextStyle(color: AppColours.error),
+          child: SingleChildScrollView(
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
+              decoration: BoxDecoration(
+                color: AppColours.paperTop,
+                borderRadius: BorderRadius.circular(24),
+                border: Border.all(color: AppColours.fieldBorder),
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Center(
+                    child: Container(
+                      width: 36,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: AppColours.fieldBorder,
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Row(
+                    children: [
+                      Icon(icon, color: AppColours.cobalt),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          title,
+                          style: const TextStyle(
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                            color: AppColours.ink,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        icon: const Icon(
+                          Icons.close_rounded,
+                          color: AppColours.subtle,
+                        ),
+                        tooltip: 'Close',
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  DefaultTextStyle(
+                    style: const TextStyle(
+                      fontSize: 14,
+                      color: AppColours.ink,
+                      height: 1.45,
+                    ),
+                    child: child,
+                  ),
+                  if (actions.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: actions,
+                    ),
+                  ],
+                ],
+              ),
             ),
           ),
-        ],
+        ),
       ),
     );
   }
+}
+
+class _Detail extends StatelessWidget {
+  const _Detail({
+    required this.label,
+    required this.value,
+    this.selectable = false,
+  });
+  final String label;
+  final String value;
+  final bool selectable;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        label,
+        style: const TextStyle(
+          fontSize: 11,
+          letterSpacing: 1,
+          color: AppColours.eyebrow,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+      const SizedBox(height: 5),
+      selectable
+          ? SelectableText(
+              value,
+              style: const TextStyle(fontSize: 15, color: AppColours.ink),
+            )
+          : Text(
+              value,
+              style: const TextStyle(fontSize: 15, color: AppColours.ink),
+            ),
+    ],
+  );
 }
 
 class _ProfileOption extends StatelessWidget {
