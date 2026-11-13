@@ -234,6 +234,12 @@ export function createOpenPaymentsRedemptionProvider(
               accessToken: result.access_token.value,
               manageUrl: result.access_token.manage,
               expiresAtEpochMs: requestedAt + returned.expiresInSeconds * 1000,
+              approvedScope: {
+                payerId: payer.id,
+                debit: returned.budget,
+                actions: ["create", "read"],
+                ...(returned.limits.receiver === undefined ? {} : { receiver: returned.limits.receiver }),
+              },
             },
             continuation: { uri: testWalletUrl(result.continue.uri), accessToken: result.continue.access_token.value },
             grantedDebit: money(returned.budget),
@@ -397,12 +403,33 @@ export function createOpenPaymentsRedemptionProvider(
       try {
         const rotated = await (await sdk()).token.rotate({ url: testWalletUrl(authority.manageUrl), accessToken: authority.accessToken });
         const seconds = rotated.access_token.expires_in;
+        let scopeUnverified = authority.scopeUnverified === true;
+        if (authority.approvedScope) {
+          try {
+            const approved = authority.approvedScope;
+            if (!Array.isArray(approved.actions) || approved.actions.length !== 2 ||
+                approved.actions[0] !== "create" || approved.actions[1] !== "read") {
+              throw new Error("The saved outgoing scope is unverifiable.");
+            }
+            const validated = validateReturnedOutgoingGrant(
+              // Expiry is checked separately by the caller; compare the actual returned access scope.
+              { access_token: { ...rotated.access_token, expires_in: 1 } },
+              { payerId: approved.payerId, requestedDebit: approved.debit, requestedReceiver: approved.receiver },
+            );
+            if (validated.budget.value !== approved.debit.value) scopeUnverified = true;
+          } catch {
+            scopeUnverified = true;
+          }
+        }
         return {
           accessToken: rotated.access_token.value,
           manageUrl: rotated.access_token.manage,
           ...(typeof seconds === "number" && seconds > 0 ? { expiresAtEpochMs: requestedAt + seconds * 1000 } : {}),
+          ...(authority.approvedScope ? { approvedScope: authority.approvedScope } : {}),
+          ...(scopeUnverified ? { scopeUnverified: true as const } : {}),
         };
       } catch (error) {
+        /* SDK response validation can throw before exposing a replacement token. */
         if (isDefinitiveRejection(error)) throw new ProviderRejectedError("Token rotation was refused.");
         throw new ProviderUnknownError("Token rotation outcome is unknown.");
       }

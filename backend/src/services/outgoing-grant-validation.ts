@@ -85,7 +85,7 @@ function validateIntended(intended: IntendedOutgoingApproval): bigint {
 // pure and deterministic: no provider calls, no wall clock, no token values in messages.
 // scope, budget, receiver and timing must all be verifiable or the grant is rejected (fail closed).
 export function validateReturnedOutgoingGrant(
-  grant: GrantWithAccessToken,
+  grant: Pick<GrantWithAccessToken, "access_token"> & Partial<Pick<GrantWithAccessToken, "continue">>,
   intended: IntendedOutgoingApproval,
 ): ValidatedOutgoingGrant {
   // reject null/malformed top-level shapes with a constant error instead of a TypeError
@@ -109,6 +109,9 @@ export function validateReturnedOutgoingGrant(
     throw new Error("The finalized grant does not carry exactly one outgoing-payment scope for the intended payer.");
   }
   const outgoing = entry as ReturnedOutgoingAccessEntry;
+  if (Object.keys(outgoing).some((key) => !["type", "identifier", "actions", "limits"].includes(key))) {
+    throw new Error("The provider returned unrecognized outgoing scope fields.");
+  }
   if (outgoing.identifier !== intended.payerId) {
     throw new Error("The provider granted outgoing access for a wallet other than the intended payer.");
   }
@@ -146,6 +149,10 @@ export function validateReturnedOutgoingGrant(
 
   // accept exact or provider-narrowed positive budgets only
   const returnedDebit = limits.debitAmount;
+  if (typeof returnedDebit !== "object" || returnedDebit === null || Array.isArray(returnedDebit) ||
+      Object.keys(returnedDebit).some((key) => !["value", "assetCode", "assetScale"].includes(key))) {
+    throw new Error("The provider returned unrecognized debit amount fields.");
+  }
   const returnedValue = strictPositiveAmount(returnedDebit, "returned");
   if (!sameAsset(returnedDebit, intended.requestedDebit)) {
     throw new Error("The provider returned a debit cap in a different asset or scale than requested.");

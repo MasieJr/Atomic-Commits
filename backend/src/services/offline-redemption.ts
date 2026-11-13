@@ -352,6 +352,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   async function freshAuthority(grantId: string): Promise<OutgoingAuthority> {
     const current = await authorities.loadAuthority(pool, grantId);
     if (!current) throw new ApiError(409, "This grant has no stored provider authority.", "GRANT_NOT_SPENDABLE");
+    if (current.scopeUnverified) throw new ApiError(409, "The payer's authority scope is not verifiable.", "GRANT_NOT_SPENDABLE");
     if (current.expiresAtEpochMs === undefined || !Number.isSafeInteger(current.expiresAtEpochMs)) {
       await pool.query(
         "UPDATE app_private.payment_grants SET status = 'REAUTHORIZATION_REQUIRED', updated_at = now() WHERE id = $1 AND status = 'ACTIVE'",
@@ -382,13 +383,13 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       throw new ApiError(409, "The payer's authority could not be refreshed.", "GRANT_NOT_SPENDABLE");
     }
     /* the old token may already be dead, so the new one is always saved */
-    const usable = rotated.accessToken !== current.accessToken && Boolean(rotated.manageUrl) &&
+    const usable = !rotated.scopeUnverified && rotated.accessToken !== current.accessToken && Boolean(rotated.manageUrl) &&
       Number.isSafeInteger(rotated.expiresAtEpochMs) && rotated.expiresAtEpochMs! > now() + TOKEN_REFRESH_MARGIN_MS;
     const stillRotating = await inTransaction(async (db) => {
       await authorities.saveAuthority(db, grantId, rotated);
       const back = await db.query(
         "UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1 AND status = 'ROTATING' RETURNING id",
-        [grantId, usable ? "ACTIVE" : "REAUTHORIZATION_REQUIRED"],
+        [grantId, usable ? "ACTIVE" : rotated.scopeUnverified ? "BLOCKED" : "REAUTHORIZATION_REQUIRED"],
       );
       return Boolean(back.rows[0]);
     });
@@ -585,12 +586,13 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         if (!g) throw codeInvalid();
         /* Match grant revocation's lock order: grant first, then device. */
         const lockedDevice = await db.query(
-          "SELECT status, expires_at FROM app_private.totp_devices WHERE id = $1 FOR UPDATE",
+          "SELECT status, expires_at, authorization_id FROM app_private.totp_devices WHERE id = $1 FOR UPDATE",
           [device.id],
         );
         const lockedNow = now();
         const refreshedVerification = verifyTotp(secret, parsed.code, lockedNow, allowedDriftSteps);
-        if (lockedDevice.rows[0]?.status !== "ACTIVE" || new Date(lockedDevice.rows[0].expires_at).getTime() <= lockedNow ||
+        if (lockedDevice.rows[0]?.status !== "ACTIVE" || lockedDevice.rows[0].authorization_id !== device.authorization_id ||
+            new Date(lockedDevice.rows[0].expires_at).getTime() <= lockedNow ||
             !refreshedVerification.valid || refreshedVerification.timeStep !== verification.timeStep) throw codeInvalid();
         if (g.authority_source !== "PROVIDER") {
           throw new ApiError(409, "This device is linked to a demo placeholder grant that cannot move money.", "DEMO_GRANT");
@@ -752,12 +754,12 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         [device.authorization_id, device.payer_user_id],
       );
       const deviceState = await db.query(
-        "SELECT status, expires_at FROM app_private.totp_devices WHERE id = $1 FOR UPDATE", [device.id],
+        "SELECT status, expires_at, authorization_id FROM app_private.totp_devices WHERE id = $1 FOR UPDATE", [device.id],
       );
       const d = deviceState.rows[0];
       const g = grantState.rows[0];
       const at = now();
-      if (!d || d.status !== "ACTIVE" || new Date(d.expires_at).getTime() <= at ||
+      if (!d || d.status !== "ACTIVE" || d.authorization_id !== device.authorization_id || new Date(d.expires_at).getTime() <= at ||
           !g || g.status !== "ACTIVE" || new Date(g.valid_from).getTime() > at || new Date(g.valid_until).getTime() <= at ||
           (quote.expiresAtEpochMs !== undefined && quote.expiresAtEpochMs <= at)) return false;
       const update = await db.query(

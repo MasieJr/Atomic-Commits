@@ -104,6 +104,12 @@ async function main(): Promise<void> {
         accessToken: grant.access_token.value,
         manageUrl: grant.access_token.manage,
         expiresAtEpochMs: requestedAt + returned.expiresInSeconds * 1000,
+        approvedScope: {
+          payerId: payer.id,
+          debit: returned.budget,
+          actions: ["create", "read"],
+          ...(returned.limits.receiver === undefined ? {} : { receiver: returned.limits.receiver }),
+        },
       });
       await store.saveContinuation(client2, grantId, {
         uri: grant.continue.uri,
