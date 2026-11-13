@@ -16,6 +16,16 @@ export function createWalletsRouter(wallets: VerifiedWalletService, tokens: Acce
   router.get("/wallet", requireLogin, perUser, async (req, res) => {
     res.json({ wallet: await wallets.getWallet(req.userId!) });
   });
+  router.get("/wallets", requireLogin, perUser, async (req, res) => {
+    res.json({ wallets: await wallets.listWallets(req.userId!) });
+  });
+  router.post("/wallets/approvals", requireLogin, perUser, async (req, res) => {
+    res.status(202).json(await wallets.start(req.userId!, req.body, true));
+  });
+  router.post("/wallets/default", requireLogin, perUser, async (req, res) => {
+    await wallets.setDefault(req.userId!, req.body);
+    res.json({ wallets: await wallets.listWallets(req.userId!) });
+  });
   router.post("/wallet/approvals", requireLogin, perUser, async (req, res) => {
     res.status(202).json(await wallets.start(req.userId!, req.body));
   });

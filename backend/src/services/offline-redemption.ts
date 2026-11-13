@@ -122,6 +122,8 @@ interface AttemptRow {
   id: string;
   status: AttemptStatus;
   request_fingerprint: string;
+  receiving_wallet_snapshot: string | null;
+  receiving_wallet_explicit: boolean | null;
   merchant_receive_value: string;
   merchant_receive_asset_code: string;
   merchant_receive_asset_scale: number;
@@ -187,7 +189,7 @@ function toView(row: AttemptRow): PaymentView {
   };
 }
 
-const ATTEMPT_SELECT = `SELECT a.id, a.status, a.request_fingerprint, a.merchant_receive_value,
+const ATTEMPT_SELECT = `SELECT a.id, a.status, a.request_fingerprint, a.receiving_wallet_snapshot, a.receiving_wallet_explicit, a.merchant_receive_value,
   a.merchant_receive_asset_code, a.merchant_receive_asset_scale, a.payer_debit_value, a.payer_debit_asset_code,
   a.payer_debit_asset_scale, a.error_code, a.payer_debit_paid_value, a.merchant_receive_paid_value,
   a.completed_at, a.created_at, a.updated_at, a.provider_incoming_ref, a.provider_attempt_ref,
@@ -253,12 +255,13 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     /* close the merchant's unpaid incoming payment so it doesn't linger as EXPIRED (best effort) */
     try {
       const { rows } = await pool.query(
-        `SELECT a.provider_incoming_ref, m.receiving_wallet_address
+        `SELECT a.provider_incoming_ref, COALESCE(a.receiving_wallet_snapshot,
+                 CASE WHEN a.legacy_destination_locked THEN m.receiving_wallet_address END) AS receiving_wallet_address
            FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id
           WHERE a.id = $1 AND a.status IN ('FAILED', 'REJECTED')`,
         [attemptId],
       );
-      if (rows[0]?.provider_incoming_ref) {
+      if (rows[0]?.provider_incoming_ref && rows[0].receiving_wallet_address) {
         await provider.completeIncoming({
           incomingPaymentId: rows[0].provider_incoming_ref,
           merchantWalletAddress: rows[0].receiving_wallet_address,
@@ -425,7 +428,8 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       `SELECT a.status, a.provider_attempt_ref, a.provider_incoming_ref, a.provider_quote_ref, a.grant_id,
               a.payer_debit_value, a.payer_debit_asset_code, a.payer_debit_asset_scale, a.updated_at,
               a.merchant_receive_value, a.merchant_receive_asset_code, a.merchant_receive_asset_scale,
-              m.receiving_wallet_address, g.payer_wallet_address
+              COALESCE(a.receiving_wallet_snapshot,
+                CASE WHEN a.legacy_destination_locked THEN m.receiving_wallet_address END) AS receiving_wallet_address, g.payer_wallet_address
          FROM app_private.payment_attempts a
          JOIN app_private.merchants m ON m.id = a.merchant_id
          JOIN app_private.payment_grants g ON g.id = a.grant_id
@@ -434,6 +438,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     );
     const row = rows[0];
     if (!row) return;
+    if (!row.receiving_wallet_address) return; // Historical destination is unknown.
     if (!row.provider_attempt_ref) {
       /* crashed or timed out mid-submit: ask the provider (read-only) whether it exists */
       if (row.status !== "UNKNOWN" || !row.provider_quote_ref) return;
@@ -508,6 +513,10 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       typeof args.body === "object" && args.body !== null && !Array.isArray(args.body)
         ? (args.body as Record<string, unknown>)
         : {};
+    if (body.receivingWalletAddress !== undefined &&
+        (typeof body.receivingWalletAddress !== "string" || !body.receivingWalletAddress || body.receivingWalletAddress.length > 300)) {
+      throw new ApiError(400, "Invalid receiving wallet address.", "INVALID_REQUEST");
+    }
     if (body.credentialType !== "totp-v1" || typeof body.paymentCode !== "string" || !isMoney(body.merchantReceive)) {
       throw new ApiError(
         400,
@@ -524,10 +533,16 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       .update(JSON.stringify(["totp-v1", paymentCode, receive.value, receive.assetCode, receive.assetScale]))
       .digest("hex");
 
+    const matchesReplay = (attempt: AttemptRow) =>
+      attempt.request_fingerprint === fingerprint &&
+      (attempt.receiving_wallet_explicit === null ||
+        attempt.receiving_wallet_explicit === (body.receivingWalletAddress !== undefined)) &&
+      (body.receivingWalletAddress === undefined || body.receivingWalletAddress === attempt.receiving_wallet_snapshot);
+
     /* 1. idempotent replay */
     const existing = await findByIdempotency(merchant.id, key);
     if (existing) {
-      if (existing.request_fingerprint !== fingerprint) {
+      if (!matchesReplay(existing)) {
         throw new ApiError(409, "This Idempotency-Key was already used for a different request.", "IDEMPOTENCY_CONFLICT");
       }
       return { payment: toView(existing), created: false };
@@ -564,6 +579,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
 
     /* 3. claim + reservation, atomically */
     let attemptId: string;
+    let receivingWalletAddress: string;
     let grant: {
       payer_wallet_address: string;
       asset_code: string;
@@ -571,7 +587,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       reserved: bigint;
     };
     try {
-      ({ attemptId, grant } = await inTransaction(async (db) => {
+      ({ attemptId, grant, receivingWalletAddress } = await inTransaction(async (db) => {
         const { rows: grants } = await db.query(
           `SELECT id, status, authority_source, payer_wallet_address, asset_code, asset_scale,
                   cumulative_cap, per_payment_max_debit, cumulative_spent, valid_from, valid_until
@@ -583,6 +599,12 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         );
         const g = grants[0];
         if (!g) throw codeInvalid();
+        // A concurrent request on this grant may have committed while we waited.
+        const replay = await db.query(
+          "SELECT 1 FROM app_private.payment_attempts WHERE merchant_id = $1 AND idempotency_key = $2",
+          [merchant.id, key],
+        );
+        if (replay.rows[0]) throw new RaceReplay();
         /* Match grant revocation's lock order: grant first, then device. */
         const lockedDevice = await db.query(
           "SELECT status, expires_at FROM app_private.totp_devices WHERE id = $1 FOR UPDATE",
@@ -624,17 +646,44 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           throw new ApiError(409, "The payer's approved spending limit has been reached.", "INSUFFICIENT_GRANT_BUDGET");
         }
 
+        // Wallet mutations take this lock before the merchant lock. NO KEY UPDATE
+        // remains compatible with payment foreign-key checks for self-payments.
+        await db.query("SELECT id FROM app_private.users WHERE id = $1 FOR NO KEY UPDATE", [args.userId]);
+        const merchantReplay = await db.query(
+          "SELECT 1 FROM app_private.payment_attempts WHERE merchant_id = $1 AND idempotency_key = $2",
+          [merchant.id, key],
+        );
+        if (merchantReplay.rows[0]) throw new RaceReplay();
+        const wallets = await db.query(
+          "SELECT count(*)::int AS count FROM app_private.verified_wallets WHERE user_id = $1", [args.userId],
+        );
+        if (body.receivingWalletAddress === undefined && wallets.rows[0].count > 1) {
+          throw new ApiError(400, "Specify the receiving wallet address and confirm the amount.", "RECEIVING_WALLET_REQUIRED");
+        }
+        const destination = await db.query(
+          `SELECT m.receiving_wallet_address FROM app_private.merchants m
+            WHERE m.id = $1 AND m.user_id = $2 AND m.status = 'ACTIVE'
+              AND EXISTS (SELECT 1 FROM app_private.verified_wallets w
+                           WHERE w.user_id = m.user_id AND w.wallet_address = m.receiving_wallet_address)
+            FOR SHARE`, [merchant.id, args.userId],
+        );
+        if (!destination.rows[0]) throw new ApiError(403, "Only merchant accounts can redeem payment codes.", "NOT_A_MERCHANT");
+        const receivingWalletAddress: string = destination.rows[0].receiving_wallet_address;
+        if (body.receivingWalletAddress !== undefined && body.receivingWalletAddress !== receivingWalletAddress) {
+          throw new ApiError(409, "The receiving wallet changed. Refresh before accepting payment.", "RECEIVING_WALLET_CHANGED");
+        }
+
         let attempt;
         try {
           attempt = await db.query(
             `INSERT INTO app_private.payment_attempts
                (payer_user_id, merchant_id, grant_id, device_id, idempotency_key, request_fingerprint, status,
-                merchant_receive_value, merchant_receive_asset_code, merchant_receive_asset_scale)
-             VALUES ($1, $2, $3, $4, $5, $6, 'AWAITING_AUTHORIZATION', $7, $8, $9)
+                merchant_receive_value, merchant_receive_asset_code, merchant_receive_asset_scale, receiving_wallet_snapshot, receiving_wallet_explicit)
+             VALUES ($1, $2, $3, $4, $5, $6, 'AWAITING_AUTHORIZATION', $7, $8, $9, $10, $11)
              RETURNING id`,
             [
               device.payer_user_id, merchant.id, g.id, device.id, key, fingerprint,
-              receive.value, receive.assetCode, receive.assetScale,
+              receive.value, receive.assetCode, receive.assetScale, receivingWalletAddress, body.receivingWalletAddress !== undefined,
             ],
           );
         } catch (error) {
@@ -663,6 +712,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         );
         return {
           attemptId: id,
+          receivingWalletAddress,
           grant: {
             payer_wallet_address: g.payer_wallet_address,
             asset_code: g.asset_code,
@@ -675,7 +725,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       if (error instanceof RaceReplay) {
         /* a concurrent identical request won the race: answer like a replay */
         const winner = await findByIdempotency(merchant.id, key);
-        if (winner && winner.request_fingerprint === fingerprint) return { payment: toView(winner), created: false };
+        if (winner && matchesReplay(winner)) return { payment: toView(winner), created: false };
         throw new ApiError(409, "This Idempotency-Key was already used for a different request.", "IDEMPOTENCY_CONFLICT");
       }
       throw error;
@@ -686,7 +736,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     try {
       quote = await provider.prepareQuote({
         payerWalletAddress: grant.payer_wallet_address,
-        merchantWalletAddress: merchant.receiving_wallet_address,
+        merchantWalletAddress: receivingWalletAddress,
         merchantReceive: receive,
         reference: attemptId,
       });

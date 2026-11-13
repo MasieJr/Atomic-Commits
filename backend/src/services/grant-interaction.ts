@@ -158,11 +158,15 @@ export async function requestInteractiveGrant(
     options.signal.throwIfAborted();
     const deadline = Date.now() + options.timeoutMs;
     const receivedAt = Date.now();
+    console.error(JSON.stringify({ event: "dbg-wait-start", timeoutMs: options.timeoutMs, at: new Date().toISOString() }));
     // the HTTP handler resolves this; timeout or Ctrl+C rejects it
     const callback = new Promise<string>((resolve, reject) => {
       resolveCallback = resolve;
       rejectCallback = reject;
-      timeout = setTimeout(() => reject(new Error("Timed out waiting for provider approval.")), options.timeoutMs);
+      timeout = setTimeout(() => {
+        console.error(JSON.stringify({ event: "dbg-timer-fired", scheduledForMs: options.timeoutMs, elapsedMs: Date.now() - receivedAt, at: new Date().toISOString() }));
+        reject(new Error("Timed out waiting for provider approval."));
+      }, options.timeoutMs);
     });
     // handle early rejection; the await below still reports it
     void callback.catch(() => {});

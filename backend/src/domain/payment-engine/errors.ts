@@ -36,6 +36,8 @@ export type PaymentEngineErrorCode =
   // Request validity / construction
   | "INVALID_MONEY"
   | "INVALID_PAYMENT_REQUEST"
+  | "QUOTE_UNAVAILABLE"
+  | "PROVIDER_PAYMENT_REJECTED"
   // Ownership and lookup
   | "PAYMENT_NOT_FOUND"
   | "PAYMENT_NOT_ACCESSIBLE";
@@ -57,6 +59,8 @@ export const PAYMENT_ENGINE_ERROR_CODES: readonly PaymentEngineErrorCode[] = [
   "CLAIM_INVALID",
   "INVALID_MONEY",
   "INVALID_PAYMENT_REQUEST",
+  "QUOTE_UNAVAILABLE",
+  "PROVIDER_PAYMENT_REJECTED",
   "PAYMENT_NOT_FOUND",
   "PAYMENT_NOT_ACCESSIBLE",
 ] as const;
@@ -85,6 +89,8 @@ export const PAYMENT_ENGINE_ERROR_MESSAGES: Readonly<
   CLAIM_INVALID: "The device instruction claim request is malformed or unbound to its authorization.",
   INVALID_MONEY: "A monetary amount is malformed or outside the allowed form.",
   INVALID_PAYMENT_REQUEST: "The payment request is malformed or internally inconsistent.",
+  QUOTE_UNAVAILABLE: "A verifiable payment quote could not be obtained.",
+  PROVIDER_PAYMENT_REJECTED: "The provider rejected the payment without a debit.",
   PAYMENT_NOT_FOUND: "The referenced payment does not exist under the requesting owner.",
   PAYMENT_NOT_ACCESSIBLE: "The referenced payment exists but belongs to a different owner.",
 };

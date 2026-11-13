@@ -10,10 +10,12 @@ export function createAuthRouter(
 ): Router {
   const router = Router();
 
+  router.post('/email-code', controller.sendEmailCode);
   router.post('/register', controller.register);
   router.post('/login', controller.login);
+  router.post('/refresh', controller.refresh);
   router.get('/me', createRequireLogin(tokens), controller.me);
-  /* logout is stateless, it needs no valid token */
+  /* logout revokes the refresh token in the body; it needs no valid access token */
   router.post('/logout', controller.logout);
 
   return router;

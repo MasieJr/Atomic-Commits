@@ -12,6 +12,11 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const APPROVAL_TTL_MS = 10 * 60_000;
 const context = (id: string) => `wallet-verification:${id}`;
 
+function isLegacyDestinationGuard(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "constraint" in error &&
+    error.constraint === "merchant_legacy_destination_guard";
+}
+
 export function createVerifiedWalletService(options: {
   pool: Pool;
   encryption: DataEncryption;
@@ -26,7 +31,7 @@ export function createVerifiedWalletService(options: {
   async function getWallet(userId: number) {
     const { rows } = await pool.query(
       `SELECT wallet_address, asset_code, asset_scale, public_name, verified_at
-         FROM app_private.verified_wallets WHERE user_id = $1`, [userId],
+         FROM app_private.verified_wallets WHERE user_id = $1 AND is_default_spending`, [userId],
     );
     const row = rows[0];
     return row ? {
@@ -38,9 +43,48 @@ export function createVerifiedWalletService(options: {
     } : null;
   }
 
-  async function start(userId: number, body: unknown) {
+  async function listWallets(userId: number) {
+    const { rows } = await pool.query(
+      `SELECT wallet_address, asset_code, asset_scale, public_name, verified_at,
+              is_default_spending, is_default_receiving
+         FROM app_private.verified_wallets WHERE user_id = $1 ORDER BY verified_at, wallet_address`, [userId],
+    );
+    return rows.map((row) => ({
+      address: row.wallet_address, assetCode: row.asset_code, assetScale: row.asset_scale,
+      publicName: row.public_name, verifiedAt: new Date(row.verified_at).toISOString(),
+      isDefaultSpending: row.is_default_spending, isDefaultReceiving: row.is_default_receiving,
+    }));
+  }
+
+  async function setDefault(userId: number, body: unknown) {
+    const input = typeof body === "object" && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {};
+    if (typeof input.walletAddress !== "string" || !input.walletAddress || input.walletAddress.length > 300 ||
+        (input.purpose !== "spending" && input.purpose !== "receiving")) {
+      throw new ApiError(400, "Provide a wallet address and a spending or receiving purpose.", "INVALID_REQUEST");
+    }
+    const column = input.purpose === "spending" ? "is_default_spending" : "is_default_receiving";
+    const db = await pool.connect();
+    try {
+      await db.query("BEGIN");
+      await db.query("SELECT id FROM app_private.users WHERE id = $1 FOR NO KEY UPDATE", [userId]);
+      const wallet = await db.query("SELECT 1 FROM app_private.verified_wallets WHERE user_id = $1 AND wallet_address = $2", [userId, input.walletAddress]);
+      if (!wallet.rows[0]) throw new ApiError(404, "Verified wallet not found.", "NOT_FOUND");
+      await db.query(`UPDATE app_private.verified_wallets SET ${column} = false WHERE user_id = $1 AND ${column}`, [userId]);
+      await db.query(`UPDATE app_private.verified_wallets SET ${column} = true WHERE user_id = $1 AND wallet_address = $2`, [userId, input.walletAddress]);
+      if (input.purpose === "receiving") {
+        await db.query("UPDATE app_private.merchants SET receiving_wallet_address = $2 WHERE user_id = $1", [userId, input.walletAddress]);
+      }
+      await db.query("COMMIT");
+    } catch (error) {
+      await db.query("ROLLBACK").catch(() => {});
+      if (isLegacyDestinationGuard(error)) throw new ApiError(409, "The receiving wallet cannot be changed because of a legacy pending payment. Contact the operator.", "LEGACY_PAYMENTS_BLOCK_WALLET_CHANGE");
+      throw error;
+    } finally { db.release(); }
+  }
+
+  async function start(userId: number, body: unknown, allowAdditional = false) {
     const base = publicCallbackOrigin(options.publicBaseUrl);
-    if (await getWallet(userId)) throw new ApiError(409, "A wallet is already linked to this account.", "WALLET_ALREADY_LINKED");
+    if (!allowAdditional && await getWallet(userId)) throw new ApiError(409, "A wallet is already linked to this account.", "WALLET_ALREADY_LINKED");
     const input = typeof body === "object" && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {};
     if (typeof input.walletAddress !== "string" || input.walletAddress.trim().length === 0 || input.walletAddress.length > 300) {
       throw new ApiError(400, "Enter a wallet address.", "INVALID_REQUEST");
@@ -49,6 +93,8 @@ export function createVerifiedWalletService(options: {
     try { wallet = await walletProvider.lookupWallet(input.walletAddress); } catch {
       throw new ApiError(422, "That Test Wallet address could not be found.", "WALLET_NOT_FOUND");
     }
+    const existing = await pool.query("SELECT 1 FROM app_private.verified_wallets WHERE user_id = $1 AND wallet_address = $2", [userId, wallet.id]);
+    if (existing.rows[0]) throw new ApiError(409, "This wallet is already linked to this account.", "WALLET_ALREADY_LINKED");
     const id = randomUUID();
     const clientNonce = randomBytes(32).toString("base64url");
     let started: StartedWalletVerification;
@@ -62,10 +108,10 @@ export function createVerifiedWalletService(options: {
       await pool.query(
         `INSERT INTO app_private.wallet_verifications
            (id, owner_user_id, wallet_address, auth_server_url, asset_code, asset_scale, public_name,
-            secrets_ciphertext, key_version, expires_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10 / 1000.0))`,
+            secrets_ciphertext, key_version, expires_at, allow_additional)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, to_timestamp($10 / 1000.0), $11)`,
         [id, userId, wallet.id, wallet.authServer, wallet.assetCode, wallet.assetScale, wallet.publicName ?? null,
-          sealed.ciphertext, sealed.keyVersion, now() + APPROVAL_TTL_MS],
+          sealed.ciphertext, sealed.keyVersion, now() + APPROVAL_TTL_MS, allowAdditional],
       );
     } catch {
       await verificationProvider.cancel(started.continuation).catch(() => {});
@@ -122,14 +168,21 @@ export function createVerifiedWalletService(options: {
       const db = await pool.connect();
       try {
         await db.query("BEGIN");
+        await db.query("SELECT id FROM app_private.users WHERE id = $1 FOR NO KEY UPDATE", [row.owner_user_id]);
         const interaction = await db.query(
           "SELECT id FROM app_private.wallet_verifications WHERE id = $1 AND status = 'FINISHING' FOR UPDATE", [id],
         );
         if (!interaction.rows[0]) throw new Error("Verification is no longer active.");
+        if (!row.allow_additional) {
+          const existing = await db.query("SELECT 1 FROM app_private.verified_wallets WHERE user_id = $1", [row.owner_user_id]);
+          if (existing.rows[0]) throw new Error("Account already has a verified wallet.");
+        }
         const linked = await db.query(
-          `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale, public_name)
-           VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (user_id) DO NOTHING RETURNING user_id`,
+          `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale, public_name, is_default_spending, is_default_receiving)
+           SELECT $1, $2, $3, $4, $5, $6,
+                  NOT EXISTS (SELECT 1 FROM app_private.verified_wallets WHERE user_id = $1 AND is_default_spending),
+                  NOT EXISTS (SELECT 1 FROM app_private.verified_wallets WHERE user_id = $1 AND is_default_receiving)
+           ON CONFLICT (user_id, wallet_address) DO NOTHING RETURNING user_id`,
           [row.owner_user_id, row.wallet_address, row.auth_server_url, row.asset_code, row.asset_scale, row.public_name],
         );
         if (!linked.rows[0]) throw new Error("Account already has a verified wallet.");
@@ -175,13 +228,24 @@ export function createVerifiedWalletService(options: {
       : `DO UPDATE
           SET display_name = EXCLUDED.display_name, receiving_wallet_address = EXCLUDED.receiving_wallet_address
           WHERE merchants.status = 'ACTIVE'`;
-    const { rows } = await pool.query(
-      `INSERT INTO app_private.merchants (user_id, display_name, receiving_wallet_address)
-       SELECT user_id, $2, wallet_address FROM app_private.verified_wallets WHERE user_id = $1
+    let rows;
+    const db = await pool.connect();
+    try {
+      await db.query("BEGIN");
+      await db.query("SELECT id FROM app_private.users WHERE id = $1 FOR NO KEY UPDATE", [userId]);
+      ({ rows } = await db.query(
+       `INSERT INTO app_private.merchants (user_id, display_name, receiving_wallet_address)
+        SELECT user_id, $2, wallet_address FROM app_private.verified_wallets WHERE user_id = $1 AND is_default_receiving
        ON CONFLICT (user_id) ${onConflict}
        RETURNING id, display_name, receiving_wallet_address, status`,
       [userId, displayName],
-    );
+      ));
+      await db.query("COMMIT");
+    } catch (error) {
+      await db.query("ROLLBACK").catch(() => {});
+      if (isLegacyDestinationGuard(error)) throw new ApiError(409, "The receiving wallet cannot be changed because of a legacy pending payment. Contact the operator.", "LEGACY_PAYMENTS_BLOCK_WALLET_CHANGE");
+      throw error;
+    } finally { db.release(); }
     if (!rows[0] && input.createOnly === true) {
       const existing = await getMerchant(userId);
       if (existing) return existing;
@@ -191,7 +255,7 @@ export function createVerifiedWalletService(options: {
       walletAddress: rows[0].receiving_wallet_address, status: rows[0].status };
   }
 
-  return { getWallet, start, getApproval, callback, getMerchant, setupMerchant };
+  return { getWallet, listWallets, setDefault, start, getApproval, callback, getMerchant, setupMerchant };
 }
 
 export type VerifiedWalletService = ReturnType<typeof createVerifiedWalletService>;

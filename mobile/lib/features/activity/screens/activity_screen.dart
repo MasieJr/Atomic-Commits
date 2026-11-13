@@ -1,6 +1,8 @@
 import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/app/theme/app_spacing.dart';
+import 'package:atomic_commits/core/network/api_client.dart';
+import 'package:atomic_commits/features/activity/data/activity_cache.dart';
 import 'package:atomic_commits/features/activity/data/payment_repository.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/activity/payment_details.dart';
@@ -15,9 +17,11 @@ class ActivityScreen extends StatefulWidget {
 }
 
 class _ActivityScreenState extends State<ActivityScreen> {
-  late Future<List<PaymentModel>> _payments;
+  late Future<ActivitySnapshot?> _payments;
   final _auth = getIt<AuthController>();
   int? _ownerId;
+  int _generation = 0;
+  bool _allowCache = true;
 
   @override
   void initState() {
@@ -37,19 +41,35 @@ class _ActivityScreenState extends State<ActivityScreen> {
     if (_ownerId == _auth.user?.id) return;
     setState(() {
       _ownerId = _auth.user?.id;
+      _allowCache = false;
       _load();
     });
   }
 
-  void _load() => _payments = _ownerId == null
-      ? Future.value(const <PaymentModel>[])
-      : getIt<PaymentRepository>().getPayments();
+  void _load() {
+    final owner = _ownerId;
+    final generation = ++_generation;
+    final origin = getIt<ApiClient>().dio.options.baseUrl;
+    _payments = owner == null
+        ? Future.value(null)
+        : getIt<PaymentRepository>().getActivity(
+            origin: origin,
+            userId: owner,
+            allowCache: _allowCache,
+            isCurrent: () => mounted && _generation == generation && _auth.user?.id == owner && getIt<ApiClient>().dio.options.baseUrl == origin,
+          ).then((result) {
+            if (!result.cached && mounted && _generation == generation && _auth.user?.id == owner) {
+              _allowCache = true;
+            }
+            return result;
+          });
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColours.paperTop,
-      body: FutureBuilder<List<PaymentModel>>(
+      body: FutureBuilder<ActivitySnapshot?>(
         key: ValueKey(_ownerId),
         future: _payments,
         builder: (context, snapshot) => RefreshIndicator(
@@ -75,7 +95,13 @@ class _ActivityScreenState extends State<ActivityScreen> {
                 const Text('Loading activity…')
               else if (snapshot.hasError)
                 const Text('Activity unavailable. Pull to refresh.')
-              else if (snapshot.data!.isEmpty)
+              else if (snapshot.data == null)
+                const Text('Activity unavailable. Pull to refresh.')
+              else ...[
+                Text(snapshot.data!.cached
+                    ? 'Offline activity (may be stale) · Last synced ${snapshot.data!.syncedAt.toLocal()}'
+                    : 'Last synced ${snapshot.data!.syncedAt.toLocal()}'),
+              if (snapshot.data!.payments.isEmpty)
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 36),
                   child: Column(
@@ -91,7 +117,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                   ),
                 )
               else
-                for (final payment in snapshot.data!)
+                for (final payment in snapshot.data!.payments)
                   Column(
                     children: [
                       ListTile(
@@ -122,6 +148,7 @@ class _ActivityScreenState extends State<ActivityScreen> {
                       const Divider(height: 1),
                     ],
                   ),
+              ],
               const SizedBox(height: 20),
               TextButton.icon(
                 onPressed: () => setState(_load),

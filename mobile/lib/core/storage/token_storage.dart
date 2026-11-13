@@ -5,9 +5,10 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 class StoredSession {
-  const StoredSession({required this.token, this.user});
+  const StoredSession({required this.token, this.refreshToken, this.user});
 
   final String token;
+  final String? refreshToken;
   final Map<String, dynamic>? user;
 }
 
@@ -18,8 +19,19 @@ class TokenStorage {
 
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
-  Future<void> saveSession(String token, Map<String, dynamic> user) async {
-    await _storage.write(key: _sessionKey, value: jsonEncode({'token': token, 'user': user}));
+  Future<void> saveSession(
+    String token,
+    Map<String, dynamic> user, {
+    String? refreshToken,
+  }) async {
+    await _storage.write(
+      key: _sessionKey,
+      value: jsonEncode({
+        'token': token,
+        'refreshToken': ?refreshToken,
+        'user': user,
+      }),
+    );
     await _storage.delete(key: _tokenKey);
   }
 
@@ -29,6 +41,7 @@ class TokenStorage {
       final value = jsonDecode(stored) as Map<String, dynamic>;
       return StoredSession(
         token: value['token'] as String,
+        refreshToken: value['refreshToken'] as String?,
         user: Map<String, dynamic>.from(value['user'] as Map),
       );
     }

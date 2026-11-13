@@ -27,6 +27,9 @@ Future<void> configureDependencies() async {
   final paymentController = PaymentController(paymentRepository);
   final authController = AuthController(authRepository);
 
+  apiClient.onRefreshRequest = authRepository.refreshAccessToken;
+  apiClient.onSessionExpired = authController.sessionExpired;
+
   getIt.registerSingleton<ApiClient>(apiClient);
   getIt.registerSingleton<TokenStorage>(tokenStorage);
   getIt.registerSingleton<AuthApi>(authApi);

@@ -129,6 +129,7 @@ async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
     confirmTimeoutMs: 0,
     confirmPollMs: 1,
     publicBaseUrl: 'https://api.example.test',
+    emailVerification: { sendCode: async () => {}, verifyCode: async () => {} },
     ...(opts.drift !== undefined ? { allowedDriftSteps: opts.drift } : {}),
     log: (event, fields) => logs.push({ event, ...fields }),
   });
@@ -160,7 +161,7 @@ async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
   async function register() {
     const res = await call('/api/auth/register', {
       method: 'POST',
-      json: { name: 'Test User', email: `${randomUUID()}@example.com`, password: 'a-long-test-password' },
+      json: { name: 'Test User', email: `${randomUUID()}@example.com`, password: 'a-long-test-password', emailCode: '123456' },
     });
     assert.equal(res.status, 201);
     const body = (await res.json()) as { token?: string; accessToken?: string; user: { id: number } };
@@ -169,8 +170,8 @@ async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
 
   async function linkForTest(userId: number, address = 'https://ilp.interledger-test.dev/payer') {
     await pool.query(
-      `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale)
-       VALUES ($1, $2, 'https://auth.interledger-test.dev/', 'EUR', 2)`, [userId, address],
+      `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale, is_default_spending)
+       VALUES ($1, $2, 'https://auth.interledger-test.dev/', 'EUR', 2, true)`, [userId, address],
     );
   }
 

@@ -67,6 +67,7 @@ flutter:
   assets:
     - assets/images/atomic-payment-banner.png
     - assets/images/welcome-background.png
+    - assets/images/wallet_tutorial/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

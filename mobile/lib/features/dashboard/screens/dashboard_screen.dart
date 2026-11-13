@@ -26,6 +26,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _permissionLoading = true;
   bool _paymentsLoading = true;
   bool _paymentsError = false;
+  bool _paymentsCached = false;
+  DateTime? _paymentsSyncedAt;
+  bool _allowActivityCache = true;
 
   @override
   void initState() {
@@ -44,6 +47,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _accountChanged() {
     if (_ownerId == _auth.user?.id) return;
     _ownerId = _auth.user?.id;
+    _allowActivityCache = false;
     _refresh();
   }
 
@@ -59,6 +63,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
     setState(() {
       _permission = null;
       _payments = null;
+      _paymentsCached = false;
+      _paymentsError = false;
+      _paymentsSyncedAt = null;
       _permissionLoading = owner != null;
       _paymentsLoading = owner != null;
       _paymentsError = owner == null;
@@ -120,11 +127,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _loadPayments(int generation, int owner) async {
+    final origin = getIt<ApiClient>().dio.options.baseUrl;
     try {
-      final payments = await getIt<PaymentRepository>().getPayments();
-      if (!_current(generation, owner)) return;
+      final result = await getIt<PaymentRepository>().getActivity(
+        origin: origin,
+        userId: owner,
+        allowCache: _allowActivityCache,
+        isCurrent: () => _current(generation, owner) && getIt<ApiClient>().dio.options.baseUrl == origin,
+      );
+      if (!_current(generation, owner) || getIt<ApiClient>().dio.options.baseUrl != origin) return;
       setState(() {
-        _payments = payments;
+        if (!result.cached) _allowActivityCache = true;
+        _payments = result.payments;
+        _paymentsCached = result.cached;
+        _paymentsSyncedAt = result.syncedAt;
         _paymentsLoading = false;
       });
     } catch (_) {
@@ -244,6 +260,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ],
             ),
+            if (_paymentsSyncedAt != null)
+              Text(_paymentsCached
+                  ? 'Offline activity (may be stale) · Last synced ${_paymentsSyncedAt!.toLocal()}'
+                  : 'Last synced ${_paymentsSyncedAt!.toLocal()}'),
             if (_paymentsLoading)
               const Padding(
                 padding: EdgeInsets.symmetric(vertical: 16),

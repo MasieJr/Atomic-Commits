@@ -107,10 +107,12 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
       _message = null;
     });
     try {
-      final response = await _api.get('/wallet');
+      final response = await _api.get('/wallets');
       if (!_currentOwner) return;
-      final value = response.data['wallet'];
-      if (value == null) {
+      final wallets = (response.data['wallets'] as List)
+          .map((item) => Map<String, dynamic>.from(item as Map)).toList();
+      final receiving = wallets.where((wallet) => wallet['isDefaultReceiving'] == true);
+      if (receiving.isEmpty) {
         setState(() {
           _wallet = null;
           _walletMissing = true;
@@ -118,7 +120,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
         });
         return;
       }
-      _wallet = Map<String, dynamic>.from(value as Map);
+      _wallet = receiving.first;
 
       final result = await _api.get('/merchant');
       if (!_currentOwner) return;
@@ -192,6 +194,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
         data: {
           'credentialType': 'totp-v1',
           'paymentCode': _code.text.trim().toUpperCase(),
+          'receivingWalletAddress': wallet['address'],
           'merchantReceive': {
             'value': minor,
             'assetCode': wallet['assetCode'],
@@ -213,9 +216,19 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
           error is! DioException ||
           error.response == null ||
           (error.response!.statusCode ?? 500) >= 500;
+      final walletChanged = error is DioException &&
+          error.response?.data is Map &&
+          (error.response!.data as Map)['code'] == 'RECEIVING_WALLET_CHANGED';
       setState(() {
         _unknownSubmission = ambiguous;
-        _message = ambiguous
+        if (walletChanged) {
+          _ready = false;
+          _wallet = null;
+          _amount.clear();
+        }
+        _message = walletChanged
+            ? 'The receiving wallet changed. Refresh it and enter the amount again.'
+            : ambiguous
             ? 'Payment outcome is unknown. Do not submit again; check payment history or contact the operator.'
             : _error(error);
       });
@@ -440,6 +453,10 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                   ),
                   const SizedBox(height: 6),
                   SelectableText('${wallet['address']}'),
+                  TextButton(
+                    onPressed: () => context.go(AppRoutes.wallet),
+                    child: const Text('Change receiving wallet'),
+                  ),
                 ],
               ),
             ),

@@ -6,7 +6,10 @@ class ApiEndpoints {
       ? _configuredBaseUrl
       : kIsWeb ? '${Uri.base.origin}/api' : 'http://localhost:3000/api';
   static const String register = '/auth/register';
+  static const String emailCode = '/auth/email-code';
   static const String login = '/auth/login';
+  static const String refresh = '/auth/refresh';
+  static const String logout = '/auth/logout';
   static const String me = '/auth/me';
   static const String payments = '/payments';
 }

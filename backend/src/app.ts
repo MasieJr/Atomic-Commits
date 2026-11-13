@@ -12,17 +12,21 @@ import { createAuthRateLimiter } from "./middleware/auth-rate-limit";
 import { errorHandler } from "./middleware/error-handler";
 import { createUserRepository } from "./models/users";
 import { createAuthRouter } from "./routes/auth";
+import { createGoogleOAuthRouter } from "./routes/google-oauth";
 import { createPaymentsRouter } from "./routes/payments";
 import { createTotpDevicesRouter } from "./routes/totp-devices";
 import { createWalletsRouter } from "./routes/wallets";
 import { createDataEncryption, parseDataEncryptionKeyring, type DataEncryption } from "./services/data-encryption";
+import { createSupabaseEmailVerification, type EmailVerification } from "./services/email-verification";
 import { createGrantAuthorityStore } from "./services/grant-authority-store";
+import { createGoogleOAuthService, googleOAuthPath, type GoogleOAuthService } from "./services/google-oauth";
 import { createOfflineRedemptionService, type OfflineRedemptionService } from "./services/offline-redemption";
 import { createPaymentGrantApprovalService } from "./services/payment-grant-approval";
 import { createPaymentGrantService, type PaymentGrantService } from "./services/payment-grants";
 import { logEvent, type LogEvent } from "./services/log";
 import { createOpenPaymentsRedemptionProvider } from "./services/open-payments-redemption-provider";
 import type { RedemptionProvider } from "./services/redemption-provider";
+import { createRefreshTokenService } from "./services/refresh-tokens";
 import { createTotpEnrollmentService } from "./services/totp-enrollment";
 import { createAccessTokenService } from "./services/tokens";
 import { createVerifiedWalletService } from "./services/verified-wallets";
@@ -32,12 +36,19 @@ import { createDatabasePool } from "./db/pool";
 interface AppOptions {
   databaseUrl?: string;
   jwtSecret?: string;
+  supabaseUrl?: string;
+  supabasePublishableKey?: string;
+  googleClientId?: string;
+  googleClientSecret?: string;
+  googleAuthEnabled?: boolean;
   /* base64 of 32 random bytes; separate from jwtSecret */
   dataEncryptionKey?: string;
   dataEncryptionKeyVersion?: string;
   dataEncryptionKeyV1?: string;
   /* tests inject a fake; defaults to the live Test Wallet adapter */
   redemptionProvider?: RedemptionProvider;
+  /* tests inject a fake; defaults to Supabase email verification when configured */
+  emailVerification?: EmailVerification;
   walletVerificationProvider?: WalletVerificationProvider;
   webAllowedOrigins?: readonly string[];
   trustProxyLoopback?: boolean;
@@ -108,8 +119,6 @@ export function createApp(options: AppOptions = {}) {
     res.setHeader("Cache-Control", "no-store");
     next();
   });
-  app.use("/api/auth", createAuthRateLimiter());
-
   const configured = Boolean(
     options.databaseUrl?.trim() &&
     options.jwtSecret &&
@@ -123,16 +132,11 @@ export function createApp(options: AppOptions = {}) {
   const pool = configured
     ? createDatabasePool(options.databaseUrl!)
     : undefined;
-
+  const tokens = pool ? createAccessTokenService(options.jwtSecret!) : undefined;
+  const refreshTokens = pool ? createRefreshTokenService(pool) : undefined;
+  let encryption: DataEncryption | undefined;
+  let keyring: ReturnType<typeof parseDataEncryptionKeyring> | undefined;
   if (pool) {
-    const users = createUserRepository(pool);
-    const tokens = createAccessTokenService(options.jwtSecret!);
-    const controller = createAuthController(users, tokens);
-    app.use("/api/auth", createAuthRouter(controller, tokens));
-
-    /* device enrollment needs the encryption key on top of auth */
-    let encryption: DataEncryption | undefined;
-    let keyring: ReturnType<typeof parseDataEncryptionKeyring> | undefined;
     try {
       keyring = parseDataEncryptionKeyring({
         DATA_ENCRYPTION_KEY: options.dataEncryptionKey,
@@ -143,6 +147,71 @@ export function createApp(options: AppOptions = {}) {
     } catch {
       encryption = undefined;
     }
+  }
+  let google: GoogleOAuthService | undefined;
+  if (options.googleAuthEnabled && pool && tokens && refreshTokens && encryption && options.googleClientId && options.googleClientSecret && options.publicBaseUrl) {
+    try {
+      google = createGoogleOAuthService({
+        pool, tokens, refreshTokens, encryption, clientId: options.googleClientId,
+        clientSecret: options.googleClientSecret, publicBaseUrl: options.publicBaseUrl,
+      });
+    } catch {
+      google = undefined;
+    }
+  }
+  let readiness: Promise<boolean> | undefined;
+  let readinessExpiresAt = 0;
+  function googleReady(): Promise<boolean> {
+    if (!google || !pool) return Promise.resolve(false);
+    if (readiness && Date.now() < readinessExpiresAt) return readiness;
+    readinessExpiresAt = Date.now() + 5_000;
+    readiness = pool.query<{ ready: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM app_private.schema_migrations WHERE version = $1)
+        AND EXISTS (SELECT 1 FROM app_private.schema_migrations WHERE version = $2)
+        AND to_regclass('app_private.google_oauth_identities') IS NOT NULL
+        AND to_regclass('app_private.google_oauth_attempts') IS NOT NULL
+        AND to_regclass('app_private.google_oauth_link_limits') IS NOT NULL
+        AND to_regclass('app_private.google_oauth_link_account_limits') IS NOT NULL
+        AND to_regclass('app_private.refresh_tokens') IS NOT NULL AS ready`,
+      ["007_google_oauth.sql", "008_refresh_tokens.sql"],
+    ).then((result) => result.rows[0]?.ready === true).catch(() => false);
+    return readiness;
+  }
+  app.get(`${googleOAuthPath}/status`, async (_req, res) => {
+    res.json({ enabled: await googleReady() });
+  });
+  if (google) {
+    app.use(googleOAuthPath, async (_req, res, next) => {
+      if (!await googleReady()) {
+        res.status(503).json({ error: "Google sign-in is not available yet." });
+        return;
+      }
+      next();
+    });
+    app.use(googleOAuthPath, createGoogleOAuthRouter(google));
+  } else {
+    app.use(googleOAuthPath, (_req, res) => {
+      res.status(503).json({ error: "Google sign-in is not configured yet." });
+    });
+  }
+  app.use("/api/auth", createAuthRateLimiter());
+
+  if (pool && tokens) {
+    const users = createUserRepository(pool);
+    let emailVerification = options.emailVerification;
+    if (!emailVerification) {
+      try {
+        if (options.supabaseUrl && options.supabasePublishableKey) {
+          emailVerification = createSupabaseEmailVerification(options.supabaseUrl, options.supabasePublishableKey);
+        }
+      } catch {
+        emailVerification = undefined;
+      }
+    }
+    const controller = createAuthController(users, tokens, emailVerification, refreshTokens);
+    app.use("/api/auth", createAuthRouter(controller, tokens));
+
+    /* device enrollment needs the encryption key on top of auth */
     app.use("/api/devices", (_req, res, next) => {
       res.setHeader("Cache-Control", "no-store");
       next();
@@ -219,6 +288,9 @@ export function createApp(options: AppOptions = {}) {
     reconcilePayments: () => redemptions?.reconcilePending(),
     /* retries provider cancellation of locally revoked grants; undefined when payments are off */
     reconcileRevocations: () => grants?.retryPendingRevocations(),
+    pruneGoogleAttempts: async () => {
+      if (await googleReady()) await google?.pruneAttempts();
+    },
     async close(): Promise<void> {
       await pool?.end();
     },

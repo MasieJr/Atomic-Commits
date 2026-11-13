@@ -105,12 +105,23 @@ export function createPaymentGrantApprovalService(options: {
     const baseUrl = publicCallbackOrigin(options.publicBaseUrl);
     const input = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
     const linked = await pool.query(
-      "SELECT wallet_address FROM app_private.verified_wallets WHERE user_id = $1", [userId],
+      `SELECT wallet_address, asset_code, asset_scale,
+              (SELECT count(*)::int FROM app_private.verified_wallets WHERE user_id = $1) AS wallet_count
+         FROM app_private.verified_wallets WHERE user_id = $1 AND is_default_spending`, [userId],
     );
     if (!linked.rows[0]) throw new ApiError(409, "Link a verified wallet first.", "WALLET_REQUIRED");
     const walletAddress = linked.rows[0].wallet_address as string;
     if (input.walletAddress !== undefined && input.walletAddress !== walletAddress) {
       throw new ApiError(400, "The requested wallet does not match your verified wallet.", "INVALID_REQUEST");
+    }
+    const hasReviewedAsset = input.assetCode !== undefined || input.assetScale !== undefined;
+    if (hasReviewedAsset && (typeof input.assetCode !== "string" || !input.assetCode ||
+        typeof input.assetScale !== "number" || !Number.isSafeInteger(input.assetScale))) {
+      throw new ApiError(400, "Provide both the reviewed asset code and scale.", "INVALID_REQUEST");
+    }
+    if (linked.rows[0].wallet_count !== 1 &&
+        (typeof input.walletAddress !== "string" || !input.walletAddress || !hasReviewedAsset)) {
+      throw new ApiError(409, "Refresh the app and review the spending wallet and asset.", "WALLET_ASSET_CHANGED");
     }
     const cap = minorArg(input.cumulativeCap, DEFAULT_CAP, "cumulativeCap");
     const perPayment = minorArg(input.perPaymentMaxDebit, DEFAULT_PER_PAYMENT, "perPaymentMaxDebit");
@@ -123,6 +134,10 @@ export function createPaymentGrantApprovalService(options: {
       if (wallet.id !== walletAddress) throw new Error("Wallet identity changed.");
     } catch {
       throw new ApiError(422, "That wallet address could not be found on the Test Wallet.", "WALLET_NOT_FOUND");
+    }
+    if (wallet.assetCode !== linked.rows[0].asset_code || wallet.assetScale !== linked.rows[0].asset_scale ||
+        (hasReviewedAsset && (input.assetCode !== wallet.assetCode || input.assetScale !== wallet.assetScale))) {
+      throw new ApiError(409, "The spending wallet asset changed. Refresh before approving.", "WALLET_ASSET_CHANGED");
     }
 
     const id = randomUUID();

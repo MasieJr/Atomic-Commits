@@ -44,18 +44,20 @@ class _WalletApi implements HttpClientAdapter {
     Future<void>? cancelFuture,
   ) async {
     Map<String, dynamic> response;
-    if (options.path == '/wallet' && options.method == 'GET') {
-      response = {
-        'wallet': verified && users.id == 1
+    final wallet =
+        verified && users.id == 1
             ? {
-                'address': 'https://ilp.interledger-test.dev/a',
-                'assetCode': 'USD',
-                'assetScale': 2,
-                'publicName': 'Wallet A',
-              }
-            : null,
-      };
-    } else if (options.path == '/wallet/approvals' &&
+              'address': 'https://ilp.interledger-test.dev/a',
+              'assetCode': 'USD',
+              'assetScale': 2,
+              'publicName': 'Wallet A',
+            }
+            : null;
+    if (options.path == '/wallet' && options.method == 'GET') {
+      response = {'wallet': wallet};
+    } else if (options.path == '/wallets' && options.method == 'GET') {
+      response = {'wallets': wallet == null ? <dynamic>[] : [wallet]};
+    } else if (options.path == '/wallets/approvals' &&
         options.method == 'POST') {
       expect(options.data, {'walletAddress': r'$ilp.interledger-test.dev/a'});
       starts++;
@@ -63,7 +65,8 @@ class _WalletApi implements HttpClientAdapter {
         'approvalId': 'approval-a',
         'authorizationUrl': 'https://auth.interledger-test.dev/approve',
       };
-    } else if (options.path == '/wallet/approvals/approval-a') {
+    } else if (options.path == '/wallet/approvals/approval-a' ||
+        options.path == '/wallets/approvals/approval-a') {
       polls++;
       response = {'status': verified ? 'VERIFIED' : 'AWAITING_APPROVAL'};
     } else if (options.path == '/payment-grants' && options.method == 'POST') {
@@ -117,6 +120,10 @@ void main() {
       await tester.pumpAndSettle();
       await tester.tap(find.text('Connect an existing wallet'));
       await tester.pumpAndSettle();
+      await tester.tap(find.text('Next'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Continue'));
+      await tester.pumpAndSettle();
       await tester.enterText(
         find.byType(TextField),
         r'$ilp.interledger-test.dev/a',
@@ -130,12 +137,7 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: WalletScreen()));
       await tester.pumpAndSettle();
       expect(backend.polls, 0);
-      expect(
-        find.text(
-          'No verified wallet is connected. Create a Test Wallet account or connect an existing wallet.',
-        ),
-        findsOneWidget,
-      );
+      expect(find.text('Set up your wallet'), findsOneWidget);
 
       await tester.pumpWidget(const SizedBox.shrink());
       users.id = 1;
@@ -143,7 +145,7 @@ void main() {
       await tester.pumpWidget(const MaterialApp(home: WalletScreen()));
       await tester.pumpAndSettle();
       expect(backend.polls, 1);
-      expect(find.text('Verified wallet'), findsOneWidget);
+      expect(find.text('Verified · USD'), findsOneWidget);
       expect(find.text('Wallet A'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     },
@@ -186,6 +188,9 @@ void main() {
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
       expect(backend.grantRequest, {
+        'walletAddress': 'https://ilp.interledger-test.dev/a',
+        'assetCode': 'USD',
+        'assetScale': 2,
         'cumulativeCap': '1234',
         'perPaymentMaxDebit': '250',
       });

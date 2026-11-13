@@ -1,0 +1,13 @@
+# Offline read-only snapshots
+
+Activity and wallet snapshots are stored with `flutter_secure_storage`, scoped to the API origin (scheme, host and port) and numeric user ID. They contain last successful sync times and allowlisted display fields, not tokens, TOTP material, provider credentials or approval URLs. Activity provider references are payment identifiers used to determine confirmation status, not credentials. Amounts retain their minor-unit strings, currency codes and scales. Treat the storage as sensitive: snapshots include financial history and wallet addresses, and secure-storage guarantees depend on the platform and device.
+
+Only connection errors and connection, send or receive timeouts without an HTTP response permit activity or wallet fallback. Cached activity and wallet views identify the data as potentially stale and show the last sync time. They do not establish a current balance or spending authorization. Wallet actions are disabled in the cached view. Corrupt or unreadable snapshots are unavailable rather than authoritative. Secure-storage errors do not turn a successful server response into a failure.
+
+## Auth integration and purge contract
+
+The auth owner must capture the old API origin and user ID **before** clearing or replacing the session, invalidate the old session and notify listeners immediately, and await both `ActivityCache().purge(origin, userId)` and `WalletCache.purge(origin: origin, userId: userId)` on logout, account replacement, and a definitive 401/403 session rejection. Invoke both even if either fails; clear the token and profile in a `finally` path. A purge failure must be surfaced or retried: the in-memory block does not survive process restart. Do not allow a new session to race these purges. Pending wallet approval state is separate from these snapshots and also needs cleanup by its owner.
+
+An offline profile belongs to the auth owner. Scope it to the same origin and user, persist only explicit non-secret profile fields, label it stale with its last successful sync time, and restore it only on connection/timeout errors, never 401/403 or other HTTP errors. Purge it with the session. If the user ID is unavailable, auth must retain enough non-secret session metadata to find and delete the appropriate snapshots; silently skipping cleanup is not sufficient.
+
+The activity cache file is inside an ignored `data` directory: the integrator must explicitly force-add `mobile/lib/features/activity/data/activity_cache.dart` when staging. Existing snapshots written under a differently formatted activity origin key are not migrated or automatically deleted by this version; remove obsolete keys during any migration.

@@ -10,6 +10,9 @@ import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/auth/screens/email_verification_dialog.dart';
+import 'package:atomic_commits/features/auth/widgets/google_sign_in_button.dart';
+import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -113,18 +116,24 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _isLoading = true);
 
     try {
-      await getIt<AuthController>().register(
-        name: _nameController.text.trim(),
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      final name = _nameController.text.trim();
+      final email = _emailController.text.trim();
+      final password = _passwordController.text;
+      await getIt<AuthController>().sendEmailCode(email);
 
       if (!mounted) return;
-
-      TextInput.finishAutofillContext();
-
       setState(() => _isLoading = false);
-
+      final verified = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => EmailVerificationDialog(
+          name: name,
+          email: email,
+          password: password,
+        ),
+      );
+      if (!mounted || verified != true) return;
+      TextInput.finishAutofillContext();
       context.go(AppRoutes.wallet);
     } on DioException catch (error) {
       if (!mounted) return;
@@ -132,8 +141,7 @@ class _SignupScreenState extends State<SignupScreen> {
       setState(() => _isLoading = false);
 
       final responseData = error.response?.data;
-      String message =
-          'Unable to create an account. Please try again or log in if you already have an account.';
+      String message = 'Unable to send a verification code. Please try again.';
 
       if (responseData is Map) {
         final backendMessage = responseData['error'];
@@ -216,6 +224,16 @@ class _SignupScreenState extends State<SignupScreen> {
                                 const SizedBox(height: 16),
                                 Header(width: width),
                                 const SizedBox(height: 16),
+                                GoogleSignInButton(
+                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl).replace(path: '', query: null, fragment: null),
+                                  enabled: !_isLoading,
+                                  onComplete: (user, token, refreshToken) async {
+                                    await getIt<AuthController>().completeGoogleSignIn(user, token, refreshToken);
+                                    if (!mounted) return;
+                                    context.go(AppRoutes.home);
+                                  },
+                                ),
+                                const SizedBox(height: 16),
                                 CustomTextField(
                                   width: width,
                                   inputKey: const ValueKey('signup-name'),
@@ -296,11 +314,14 @@ class _SignupScreenState extends State<SignupScreen> {
                                   validator: _validateConfirm,
                                 ),
                                 const SizedBox(height: 18),
-                                SubmitButton(
-                                  width: width,
-                                  submit: _submit,
-                                  label: "Create an account",
-                                ),
+                                if (_isLoading)
+                                  const Center(child: CircularProgressIndicator())
+                                else
+                                  SubmitButton(
+                                    width: width,
+                                    submit: _submit,
+                                    label: "Create an account",
+                                  ),
                                 const SizedBox(height: 14),
                                 Secondary(
                                   width: width,
