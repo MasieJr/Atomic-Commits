@@ -146,7 +146,7 @@ final appRouter = GoRouter(
         GoRoute(
           path: 'qr',
           name: 'payer-qr',
-          builder: (context, state) => const PayerHomeScreen(),
+          redirect: (context, state) => AppRoutes.payer,
         ),
       ],
     ),

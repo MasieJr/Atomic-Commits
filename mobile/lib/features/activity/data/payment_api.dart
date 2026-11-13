@@ -10,16 +10,21 @@ class PaymentApi {
   Future<List<PaymentModel>> getPayments() async {
     final response = await _apiClient.dio.get(ApiEndpoints.payments);
 
-    final data = Map<String, dynamic>.from(response.data);
+    final data = response.data;
+    if (data is! Map ||
+        data['asPayer'] is! List ||
+        data['asMerchant'] is! List) {
+      throw const FormatException('Invalid payment history');
+    }
 
-    final payerPayments = (data['asPayer'] as List<dynamic>? ?? []).map(
+    final payerPayments = (data['asPayer'] as List).map(
       (payment) => PaymentModel.fromJson(
         Map<String, dynamic>.from(payment),
         direction: PaymentDirection.sent,
       ),
     );
 
-    final merchantPayments = (data['asMerchant'] as List<dynamic>? ?? []).map(
+    final merchantPayments = (data['asMerchant'] as List).map(
       (payment) => PaymentModel.fromJson(
         Map<String, dynamic>.from(payment),
         direction: PaymentDirection.received,

@@ -53,7 +53,7 @@ const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const PREFIX_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PREFIX_LENGTH = 6;
 const SECRET_BYTES = 20; /* 160 bits = the offline client's floor */
-const ENROLLMENT_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const ENROLLMENT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_PREFIX_ATTEMPTS = 5;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PREFIX_PATTERN = /^[A-Z0-9]{4,12}$/;

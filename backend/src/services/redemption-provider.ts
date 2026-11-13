@@ -27,6 +27,15 @@ export interface OutgoingAuthority {
   readonly accessToken: string;
   readonly manageUrl?: string;
   readonly expiresAtEpochMs?: number;
+  /** Present only for approvals whose exact scope was validated and persisted. */
+  readonly approvedScope?: {
+    readonly payerId: string;
+    readonly debit: Money;
+    readonly actions: readonly ["create", "read"];
+    readonly receiver?: string;
+  };
+  /** Replacement is retained for reads only when its scope cannot be verified. */
+  readonly scopeUnverified?: true;
 }
 
 export type ProviderOutcome =

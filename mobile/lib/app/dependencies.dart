@@ -24,8 +24,13 @@ Future<void> configureDependencies() async {
   );
 
   final paymentRepository = PaymentRepository(paymentApi);
-  final paymentController = PaymentController(paymentRepository);
   final authController = AuthController(authRepository);
+  final paymentController = PaymentController(
+    paymentRepository,
+    tokenStorage,
+    authController,
+    apiClient,
+  );
 
   apiClient.onRefreshRequest = authRepository.refreshAccessToken;
   apiClient.onSessionExpired = authController.sessionExpired;

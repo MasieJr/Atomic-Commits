@@ -102,7 +102,7 @@ class PaymentModel {
       status == 'SUCCEEDED' &&
       payerDebitPaid != null &&
       merchantReceivePaid != null &&
-      providerIncomingRef != null;
+      providerIncomingRef?.trim().isNotEmpty == true;
 
   String get outcomeMessage {
     if (isCompleted) return 'Received ${merchantReceivePaid!.formatted}';

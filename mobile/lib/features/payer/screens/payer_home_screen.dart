@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:atomic_commits/app/dependencies.dart';
+import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
@@ -9,6 +10,7 @@ import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:atomic_commits/features/payer/offline_profile.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 class PayerHomeScreen extends StatefulWidget {
@@ -24,41 +26,55 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
   Timer? _timer;
   bool _loading = true;
   bool _busy = false;
+  bool _setupBlocked = true;
+  bool _showWallet = false;
+  bool _ownerChanged = false;
   String? _message;
   late final int _userId;
 
   Dio get _api => getIt<ApiClient>().dio;
+  bool get _current =>
+      mounted && !_ownerChanged && getIt<AuthController>().user?.id == _userId;
+
+  void _onAuthChanged() {
+    if (!_ownerChanged && getIt<AuthController>().user?.id != _userId) {
+      setState(() => _ownerChanged = true);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _userId = getIt<AuthController>().user!.id;
+    getIt<AuthController>().addListener(_onAuthChanged);
     _loadLocalProfile();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (mounted) setState(() {});
+      if (_current) setState(() {});
     });
   }
 
   @override
   void dispose() {
     _timer?.cancel();
+    getIt<AuthController>().removeListener(_onAuthChanged);
     super.dispose();
   }
 
   Future<void> _loadLocalProfile() async {
     try {
       final profile = await _store.read(_userId);
-      if (mounted) {
+      if (_current) {
         setState(() {
           _profile = profile;
+          _setupBlocked = profile != null;
           _loading = false;
         });
       }
     } catch (_) {
-      if (mounted) {
+      if (_current) {
         setState(() {
           _loading = false;
-          _message = 'The saved device profile could not be read.';
+          _message = 'Secure device storage could not be read. Setup is blocked; restore access to secure storage before continuing.';
         });
       }
     }
@@ -69,20 +85,25 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
       final message = (error.response!.data as Map)['error'];
       if (message is String) return message;
     }
+    if (error is DioException && error.response?.statusCode != null) {
+      return 'The server rejected the request (HTTP ${error.response!.statusCode}). Check your spending permission and try again.';
+    }
     return 'Could not reach the server. Connect to the internet and try again.';
   }
 
   Future<void> _enroll() async {
-    if (getIt<AuthController>().user?.id != _userId) return;
+    if (_busy || _setupBlocked || _profile != null || !_current) return;
     var enrollmentRequested = false;
     setState(() {
       _busy = true;
       _message = null;
+      _showWallet = false;
     });
     try {
       final response = await _api.get('/payment-grants');
       final now = DateTime.now().toUtc();
-      final grants = (response.data['grants'] as List).where((grant) {
+      final allGrants = response.data['grants'] as List;
+      final grants = allGrants.where((grant) {
         final until = DateTime.tryParse(grant['validUntil'] as String? ?? '');
         final remaining =
             BigInt.tryParse(grant['remaining']['value'] as String? ?? '') ??
@@ -93,44 +114,98 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             until.isAfter(now) &&
             remaining > BigInt.zero;
       }).toList();
-      if (!mounted) return;
+      if (!_current) return;
       if (grants.isEmpty) {
         setState(
-          () => _message = 'Authorize a spending permission in Wallet before enrolling this device.',
+          () => _message = 'No eligible spending permission is available. Check Wallet and try again.',
         );
         return;
       }
-      final selected = await showDialog<Map<String, dynamic>>(
+      final selected = await showModalBottomSheet<Map<String, dynamic>>(
         context: context,
-        builder: (context) => SimpleDialog(
-          title: const Text('Choose a spending permission'),
-          children: [
-            for (final grant in grants)
-              SimpleDialogOption(
-                onPressed: () => Navigator.pop(
-                  context,
-                  Map<String, dynamic>.from(grant as Map),
+        backgroundColor: AppColours.paperTop,
+        shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        isScrollControlled: true,
+        builder: (context) => ListenableBuilder(
+          listenable: getIt<AuthController>(),
+          builder: (context, _) => !_current
+              ? const SizedBox.shrink()
+              : SafeArea(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Icon(
+                          Icons.account_balance_wallet_outlined,
+                          color: AppColours.orange,
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Choose a spending permission',
+                          style: TextStyle(
+                            color: AppColours.ink,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 12),
+                        Flexible(
+                          child: ListView(
+                            shrinkWrap: true,
+                            children: [
+                              for (final grant in grants)
+                                Card(
+                                  color: AppColours.fieldFill,
+                                  child: ListTile(
+                                    onTap: () => Navigator.pop(
+                                      context,
+                                      Map<String, dynamic>.from(grant as Map),
+                                    ),
+                                    title: Text(
+                                      '${grant['payerWalletAddress']}',
+                                      style: const TextStyle(
+                                        color: AppColours.ink,
+                                        fontWeight: FontWeight.w700,
+                                      ),
+                                    ),
+                                    subtitle: Text(
+                                      'Maximum ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['perPaymentMaxDebit'] as Map)).formatted} per payment\n'
+                                      'Remaining ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['remaining'] as Map)).formatted}\n'
+                                      'Valid until ${grant['validUntil']}',
+                                    ),
+                                    trailing: const Icon(
+                                      Icons.chevron_right,
+                                      color: AppColours.cobalt,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
                 ),
-                child: Text(
-                  '${grant['payerWalletAddress']}\n'
-                  'Maximum ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['perPaymentMaxDebit'] as Map)).formatted} per payment\n'
-                  'Remaining ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['remaining'] as Map)).formatted}\n'
-                  'Valid until ${grant['validUntil']}',
-                ),
-              ),
-          ],
         ),
       );
-      if (selected == null ||
-          !mounted ||
-          getIt<AuthController>().user?.id != _userId) {
-        return;
+      if (selected == null || !_current) return;
+      final authorizationId = selected['authorizationId'];
+      if (authorizationId is! String || authorizationId.isEmpty) {
+        throw const FormatException('Invalid permission.');
       }
+      final limit = PaymentAmount.fromJson(
+        Map<String, dynamic>.from(selected['perPaymentMaxDebit'] as Map),
+      ).formatted;
+      if (!_current) return;
       enrollmentRequested = true;
       final packet = await _api.post(
         '/devices/totp/enroll',
         data: {
-          'authorizationId': selected['authorizationId'],
+          'authorizationId': authorizationId,
           'deviceName': 'Atomic Commit mobile',
         },
       );
@@ -141,188 +216,58 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
         prefix: packetProfile.prefix,
         secret: packetProfile.secret,
         expiresAtEpochMs: packetProfile.expiresAtEpochMs,
-        permissionLimit: PaymentAmount.fromJson(
-          Map<String, dynamic>.from(selected['perPaymentMaxDebit'] as Map),
-        ).formatted,
+        permissionLimit: limit,
       );
       try {
         await _store.save(_userId, profile);
+        final saved = await _store.read(_userId);
+        if (saved == null ||
+            saved.prefix != profile.prefix ||
+            saved.secret != profile.secret) {
+          throw const FormatException('Saved device profile does not match.');
+        }
+        if (_current) {
+          setState(() => _profile = saved);
+        }
       } catch (_) {
-        if (mounted) {
-          setState(
-            () => _message =
-                'Could not save this device securely. Revoke device ${profile.prefix} before enrolling again.',
-          );
+        if (_current) {
+          setState(() {
+            _showWallet = true;
+            _message =
+                'Could not verify or finish saving device ${profile.prefix}. Check Wallet or contact support for recovery.';
+          });
         }
         return;
       }
-      if (mounted) {
+      if (_current) {
         setState(() {
           _profile = profile;
           _message = 'Device enrolled. Codes are generated on this device.';
         });
       }
     } catch (error) {
-      if (mounted) {
+      if (_current) {
         final ambiguous =
             enrollmentRequested &&
             (error is! DioException ||
                 error.response == null ||
+                error.response!.statusCode == 408 ||
                 (error.response!.statusCode ?? 500) >= 500);
-        setState(
-          () => _message = ambiguous
-              ? 'Enrollment may already exist. Check registered devices before trying again.'
-              : _errorMessage(error),
-        );
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _manageDevices() async {
-    if (getIt<AuthController>().user?.id != _userId) return;
-    setState(() => _busy = true);
-    try {
-      final response = await _api.get('/devices/totp');
-      final devices = (response.data['devices'] as List)
-          .where((device) => device['status'] == 'ACTIVE')
-          .toList();
-      if (!mounted) return;
-      if (devices.isEmpty) {
-        setState(
-          () => _message = 'There are no active devices on this account.',
-        );
-        return;
-      }
-      final prefix = await showDialog<String>(
-        context: context,
-        builder: (context) => SimpleDialog(
-          title: const Text('Revoke a registered device'),
-          children: [
-            for (final device in devices)
-              SimpleDialogOption(
-                onPressed: () =>
-                    Navigator.pop(context, device['prefix'] as String),
-                child: Text(
-                  '${device['deviceName']} · ${device['prefix']}\nPermission: ${device['grantStatus']}',
-                ),
-              ),
-          ],
-        ),
-      );
-      if (prefix == null ||
-          !mounted ||
-          getIt<AuthController>().user?.id != _userId) {
-        return;
-      }
-      final confirm = await showDialog<bool>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('Revoke device?'),
-          content: Text(
-            'Device $prefix can no longer create redeemable codes.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Revoke'),
-            ),
-          ],
-        ),
-      );
-      if (confirm != true ||
-          !mounted ||
-          getIt<AuthController>().user?.id != _userId) {
-        return;
-      }
-      await _api.post('/devices/totp/$prefix/revoke');
-      if (_profile?.prefix == prefix) await _store.delete(_userId);
-      if (mounted) {
         setState(() {
-          if (_profile?.prefix == prefix) _profile = null;
-          _message = 'Device $prefix revoked.';
+          _showWallet = ambiguous;
+          _message = ambiguous
+              ? 'Setup could not be completed safely. Check Wallet or contact support for recovery before trying again.'
+              : _errorMessage(error);
         });
       }
-    } catch (error) {
-      if (mounted) setState(() => _message = _errorMessage(error));
     } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _checkStatus() async {
-    if (getIt<AuthController>().user?.id != _userId) return;
-    final profile = _profile;
-    if (profile == null) return;
-    setState(() => _busy = true);
-    try {
-      final response = await _api.get('/devices/totp/${profile.prefix}/status');
-      if (response.data['status'] != 'ACTIVE' ||
-          response.data['grantStatus'] != 'ACTIVE') {
-        await _store.delete(_userId);
-        if (mounted) {
-          setState(() {
-            _profile = null;
-            _message = 'This device or its spending permission was revoked or is no longer active.';
-          });
-        }
-      } else {
-        final grant = await _api.get(
-          '/payment-grants/${response.data['authorizationId']}',
-        );
-        final limit = PaymentAmount.fromJson(
-          Map<String, dynamic>.from(grant.data['perPaymentMaxDebit'] as Map),
-        ).formatted;
-        final updated = OfflineProfile(
-          prefix: profile.prefix,
-          secret: profile.secret,
-          expiresAtEpochMs: profile.expiresAtEpochMs,
-          permissionLimit: limit,
-        );
-        await _store.save(_userId, updated);
-        if (mounted && getIt<AuthController>().user?.id == _userId) {
-          setState(() {
-            _profile = updated;
-            _message =
-                'The server reports this device and permission are active.';
-          });
-        }
-      }
-    } catch (error) {
-      if (mounted) setState(() => _message = _errorMessage(error));
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  Future<void> _revoke() async {
-    if (getIt<AuthController>().user?.id != _userId) return;
-    final profile = _profile;
-    if (profile == null) return;
-    setState(() => _busy = true);
-    try {
-      await _api.post('/devices/totp/${profile.prefix}/revoke');
-      await _store.delete(_userId);
-      if (mounted) {
-        setState(() {
-          _profile = null;
-          _message = 'Device revoked.';
-        });
-      }
-    } catch (error) {
-      if (mounted) setState(() => _message = _errorMessage(error));
-    } finally {
-      if (mounted) setState(() => _busy = false);
+      if (_current) setState(() => _busy = false);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    if (!_current) return const Scaffold(backgroundColor: AppColours.paperTop);
     OfflineCode? code;
     if (_profile != null) {
       try {
@@ -399,13 +344,8 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
                 backgroundColor: AppColours.cobalt,
                 padding: const EdgeInsets.symmetric(vertical: 15),
               ),
-              onPressed: _busy ? null : _enroll,
-              child: const Text('Enroll this device'),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
-              onPressed: _busy ? null : _manageDevices,
-              child: const Text('Check registered devices'),
+              onPressed: _busy || _setupBlocked ? null : () => _enroll(),
+              child: const Text('Try device setup'),
             ),
           ] else if (code == null) ...[
             Container(
@@ -426,7 +366,7 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
                   ),
                   SizedBox(height: 6),
                   Text(
-                    'Connect and revoke it before enrolling again.',
+                    'Manage this device in Wallet to continue.',
                     style: TextStyle(color: AppColours.subtle, height: 1.4),
                   ),
                 ],
@@ -434,8 +374,8 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             ),
             TextButton(
               style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
-              onPressed: _busy ? null : _revoke,
-              child: const Text('Revoke expired device'),
+              onPressed: _busy ? null : () => context.go(AppRoutes.wallet),
+              child: const Text('Manage devices in Wallet'),
             ),
           ] else ...[
             Container(
@@ -498,7 +438,7 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             Text(
               _profile!.permissionLimit != null
                   ? 'Device limit at enrollment: ${_profile!.permissionLimit} per payment'
-                  : 'Device limit unavailable. Check device status online.',
+                  : 'Device limit at enrollment is unavailable.',
               style: const TextStyle(
                 color: AppColours.ink,
                 fontWeight: FontWeight.w600,
@@ -508,24 +448,6 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
             const Text(
               'Revocation cannot be checked while offline.',
               style: TextStyle(color: AppColours.subtle, fontSize: 12),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
-              onPressed: _busy ? null : _checkStatus,
-              child: const Text('Check device status online'),
-            ),
-            TextButton(
-              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
-              onPressed: _busy ? null : _revoke,
-              child: const Text('Revoke this device'),
-            ),
-            const Text(
-              'To use a new spending permission, revoke this device and enroll again.',
-              style: TextStyle(
-                color: AppColours.subtle,
-                fontSize: 12,
-                height: 1.4,
-              ),
             ),
           ],
           if (_message != null)
@@ -541,6 +463,12 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
                 _message!,
                 style: const TextStyle(color: AppColours.ink, height: 1.4),
               ),
+            ),
+          if (_showWallet && !(_profile != null && code == null))
+            TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
+              onPressed: _busy ? null : () => context.go(AppRoutes.wallet),
+              child: const Text('Manage devices in Wallet'),
             ),
         ],
       ),
