@@ -7,7 +7,9 @@ import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
+import 'package:atomic_commits/features/activity/payment_details.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/merchant/screens/scan_qr_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -252,6 +254,19 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     }
   }
 
+  Future<void> _scanCode() async {
+    if (!_currentOwner || _busy || _unknownSubmission || _payment != null)
+      return;
+    final code = await Navigator.of(context)
+        .push<String>(MaterialPageRoute(builder: (_) => const ScanQrScreen()));
+    if (_currentOwner && code != null) {
+      setState(() {
+        _code.text = code;
+        _message = null;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final wallet = _wallet;
@@ -261,7 +276,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     return Scaffold(
       backgroundColor: cream,
       appBar: AppBar(
-        title: const Text('Receive payment'),
+        title: const Text('Receive'),
         backgroundColor: cream,
         foregroundColor: cobalt,
         elevation: 0,
@@ -319,25 +334,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                 child: const Text('Review wallet'),
               ),
           ] else if (payment != null) ...[
-            Text(
-              payment.isCompleted
-                  ? 'Payment confirmed'
-                  : switch (payment.status) {
-                      'FAILED' => 'Payment failed',
-                      'REJECTED' => 'Payment rejected',
-                      'UNKNOWN' => 'Payment status unknown',
-                      _ => 'Payment processing',
-                    },
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 12),
-            Text(payment.outcomeMessage),
-            const SizedBox(height: 12),
-            SelectableText('Payment reference: ${payment.paymentId}'),
-            if (payment.providerIncomingRef != null)
-              SelectableText(
-                'Provider incoming payment: ${payment.providerIncomingRef}',
-              ),
+            PaymentReceipt(payment: payment, scrollable: false),
             if (!payment.isCompleted &&
                 !['FAILED', 'REJECTED'].contains(payment.status))
               TextButton(
@@ -352,7 +349,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                   _code.clear();
                   _amount.clear();
                 }),
-                child: const Text('New checkout'),
+                child: const Text('Receive another payment'),
               ),
           ] else if (_unknownSubmission) ...[
             TextButton(
@@ -369,7 +366,8 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                     controller: _amount,
                     style: const TextStyle(
                       color: cobalt,
-                      fontSize: 24,
+                      fontFamily: 'Georgia',
+                      fontSize: 36,
                       fontWeight: FontWeight.w700,
                     ),
                     keyboardType: const TextInputType.numberWithOptions(
@@ -377,11 +375,9 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                     ),
                     decoration: InputDecoration(
                       labelText: 'Purchase amount (${wallet!['assetCode']})',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
+                      filled: false,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                      border: const UnderlineInputBorder(),
                     ),
                     validator: (value) =>
                         parseMinorAmount(
@@ -392,7 +388,13 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                         ? 'Enter a positive amount with the correct decimal places.'
                         : null,
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 20),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _scanCode,
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('Scan QR code'),
+                  ),
+                  const SizedBox(height: 14),
                   TextFormField(
                     controller: _code,
                     textCapitalization: TextCapitalization.characters,
@@ -428,18 +430,35 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(color: AppColours.fieldBorder),
               ),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              child: Row(
                 children: [
-                  const Text(
-                    'Receiving wallet',
-                    style: TextStyle(
-                      color: cobalt,
-                      fontWeight: FontWeight.w700,
+                  const Icon(
+                    Icons.account_balance_wallet_outlined,
+                    color: cobalt,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text(
+                          'Receiving wallet',
+                          style: TextStyle(
+                            color: cobalt,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        const SizedBox(height: 4),
+                        SelectableText(
+                          '${wallet['address']}',
+                          style: const TextStyle(
+                            color: AppColours.subtle,
+                            fontSize: 12,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 6),
-                  SelectableText('${wallet['address']}'),
                 ],
               ),
             ),
