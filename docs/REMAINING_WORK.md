@@ -44,6 +44,8 @@ debit merely to complete a release.
   restoring another account's data. Handle storage failures across restarts.
 - Cached permissions are never spending authority or a wallet balance. Disable
   actions that need current server state when displaying a cached wallet.
+- The proposed session-scoped activity design is in
+  [Offline activity snapshots](OFFLINE_ACTIVITY_DESIGN.md).
 
 ## Device continuity
 
