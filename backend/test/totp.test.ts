@@ -235,3 +235,51 @@ test('verifyAnySupportedTotpPeriod dual-tries 30s then 30m without wire metadata
   // Garbage fails closed.
   assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, '000000', 0, 1), { valid: false });
 });
+
+test('age matrix: long code lives +1m..+15m and dies at +31m; short accepts +10s/+45s, dies at +75s', () => {
+  /* Long code issued on a step boundary (long step 1; base avoids the t=0 collision). */
+  const base = TOTP_LONG_TIME_STEP_MS;
+  const long = generateApiTotp(RFC_SEED, base, TOTP_LONG_TIME_STEP_MS);
+  assert.equal(long.timeStep, 1);
+  for (const ageMs of [
+    60_000, // +1m
+    120_000, // +2m
+    180_000, // +3m
+    900_000, // +15m
+  ]) {
+    assert.deepEqual(
+      verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + ageMs, 1),
+      { valid: true, timeStep: 1, periodMs: TOTP_LONG_TIME_STEP_MS },
+      `long +${ageMs / 60_000}m`,
+    );
+  }
+  // Exactly one long step late is already out; +31m is past the single bucket.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + 31 * 60_000, 1),
+    { valid: false },
+    'long +31m',
+  );
+
+  /* Short code issued on a 30s step boundary (step 2). */
+  const shortBase = 60_000;
+  const short = generateApiTotp(RFC_SEED, shortBase);
+  assert.equal(short.timeStep, 2);
+  // +10s: still inside the issue step.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 10_000, 1),
+    { valid: true, timeStep: 2, periodMs: TOTP_TIME_STEP_MS },
+    'short +10s',
+  );
+  // +45s: next step; short drift 1 still accepts the issue step.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 45_000, 1),
+    { valid: true, timeStep: 2, periodMs: TOTP_TIME_STEP_MS },
+    'short +45s',
+  );
+  // +75s: two steps later; short drift 1 and long drift 0 both refuse.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 75_000, 1),
+    { valid: false },
+    'short +75s',
+  );
+});
