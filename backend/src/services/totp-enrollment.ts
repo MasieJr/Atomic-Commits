@@ -4,7 +4,8 @@ import type { Pool } from "pg";
 import { isValidTotpSecret } from "../domain/payment-engine/totp";
 import { ApiError } from "../errors/api-error";
 import { AuthStorageError } from "../errors/auth";
-import type { DataEncryption } from "./data-encryption";
+import { DataEncryptionError, type DataEncryption } from "./data-encryption";
+import type { GrantAuthorityStore } from "./grant-authority-store";
 
 /*
  * Server-side TOTP device enrollment. The backend picks the public prefix and
@@ -32,6 +33,19 @@ export interface DeviceStatus {
   readonly grantStatus: string;
   readonly expiresAtEpochMs: number;
   readonly createdAt: string;
+}
+
+function toDeviceStatus(row: Record<string, unknown>): DeviceStatus {
+  if (row.status !== "ACTIVE" && row.status !== "REVOKED") throw new Error("Invalid device status.");
+  return {
+    prefix: String(row.prefix),
+    deviceName: String(row.device_name),
+    status: row.status,
+    authorizationId: String(row.authorization_id),
+    grantStatus: String(row.grant_status),
+    expiresAtEpochMs: new Date(String(row.expires_at)).getTime(),
+    createdAt: new Date(String(row.created_at)).toISOString(),
+  };
 }
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -80,10 +94,11 @@ function isUniqueViolation(error: unknown, constraint: string): boolean {
 export interface TotpEnrollmentOptions {
   readonly pool: Pool;
   readonly encryption: DataEncryption;
+  readonly authorities: GrantAuthorityStore;
   readonly now?: () => number;
 }
 
-export function createTotpEnrollmentService({ pool, encryption, now = Date.now }: TotpEnrollmentOptions) {
+export function createTotpEnrollmentService({ pool, encryption, authorities, now = Date.now }: TotpEnrollmentOptions) {
   function newPrefix(): string {
     let prefix = "";
     for (let i = 0; i < PREFIX_LENGTH; i += 1) prefix += PREFIX_ALPHABET[randomInt(PREFIX_ALPHABET.length)];
@@ -103,68 +118,95 @@ export function createTotpEnrollmentService({ pool, encryption, now = Date.now }
       throw new ApiError(400, "deviceName must be 1 to 60 printable characters.");
     }
 
-    const nowMs = now();
     try {
-      /* only the owner's grant is visible: someone else's id looks like "not found" */
-      const grants = await pool.query(
-        `SELECT status, authority_source, valid_from, valid_until
-           FROM app_private.payment_grants
-          WHERE id = $1 AND payer_user_id = $2`,
-        [authorizationId, userId],
-      );
-      const grant = grants.rows[0];
-      if (!grant) throw new ApiError(404, "Grant not found.");
-      if (
-        grant.status !== "ACTIVE" ||
-        nowMs < new Date(grant.valid_from).getTime() ||
-        nowMs >= new Date(grant.valid_until).getTime()
-      ) {
-        throw new ApiError(409, "This grant is not usable. Authorize a new grant first.");
-      }
-
-      const expiresAtMs = Math.min(new Date(grant.valid_until).getTime(), nowMs + ENROLLMENT_TTL_MS);
-
-      for (let attempt = 0; attempt < MAX_PREFIX_ATTEMPTS; attempt += 1) {
-        const id = randomUUID();
-        const prefix = newPrefix();
-        const secret = base32Encode(randomBytes(SECRET_BYTES));
-        if (!PREFIX_PATTERN.test(prefix) || !isValidTotpSecret(secret, 20)) {
-          throw new Error("Generated enrollment material is malformed.");
+      const db = await pool.connect();
+      try {
+        await db.query("BEGIN");
+        /* Serialize enrollment with revocation before creating an active device. */
+        const grants = await db.query(
+          `SELECT status, authority_source, valid_from, valid_until
+             FROM app_private.payment_grants g
+            WHERE id = $1 AND payer_user_id = $2
+              AND EXISTS (SELECT 1 FROM app_private.verified_wallets w
+                           WHERE w.user_id = g.payer_user_id
+                             AND w.wallet_address = g.payer_wallet_address)
+            FOR UPDATE`,
+          [authorizationId, userId],
+        );
+        const grant = grants.rows[0];
+        if (!grant) throw new ApiError(404, "Grant not found.");
+        const nowMs = now();
+        if (
+          grant.status !== "ACTIVE" ||
+          nowMs < new Date(grant.valid_from).getTime() ||
+          nowMs >= new Date(grant.valid_until).getTime()
+        ) {
+          throw new ApiError(409, "This grant is not usable. Authorize a new grant first.");
         }
-        const sealed = encryption.encrypt(secret, deviceSecretContext(id));
-
-        try {
-          await pool.query(
-            `INSERT INTO app_private.totp_devices
-               (id, payer_user_id, authorization_id, device_name, prefix,
-                secret_ciphertext, key_version, expires_at)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8 / 1000.0))`,
-            [id, userId, authorizationId, name, prefix, sealed.ciphertext, sealed.keyVersion, expiresAtMs],
-          );
-        } catch (error) {
-          if (isUniqueViolation(error, "totp_devices_prefix_key")) continue; /* prefix taken: pick another */
-          if (isUniqueViolation(error, "totp_devices_one_active_per_grant")) {
-            throw new ApiError(
-              409,
-              "This grant already has an active device. Revoke it before enrolling again.",
-            );
+        if (grant.authority_source === "PROVIDER") {
+          try {
+            if (!(await authorities.loadAuthority(db, authorizationId))) {
+              throw new ApiError(409, "This grant has no usable provider authority. Authorize a new grant.");
+            }
+          } catch (error) {
+            if (error instanceof DataEncryptionError) {
+              throw new ApiError(409, "The original key for this grant is unavailable. Authorize a new grant.");
+            }
+            throw error;
           }
-          throw error;
         }
 
-        /* only now, after the row is committed, does the secret leave the server */
-        return {
-          version: 1,
-          prefix,
-          secret,
-          algorithm: "SHA1",
-          digits: 6,
-          periodSeconds: 30,
-          expiresAtEpochMs: expiresAtMs,
-          revoked: false,
-        };
+        const expiresAtMs = Math.min(new Date(grant.valid_until).getTime(), nowMs + ENROLLMENT_TTL_MS);
+
+        for (let attempt = 0; attempt < MAX_PREFIX_ATTEMPTS; attempt += 1) {
+          const id = randomUUID();
+          const prefix = newPrefix();
+          const secret = base32Encode(randomBytes(SECRET_BYTES));
+          if (!PREFIX_PATTERN.test(prefix) || !isValidTotpSecret(secret, 20)) {
+            throw new Error("Generated enrollment material is malformed.");
+          }
+          const sealed = encryption.encrypt(secret, deviceSecretContext(id));
+
+          try {
+            const inserted = await db.query(
+              `INSERT INTO app_private.totp_devices
+                 (id, payer_user_id, authorization_id, device_name, prefix,
+                  secret_ciphertext, key_version, expires_at)
+               VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8 / 1000.0))
+               ON CONFLICT (prefix) DO NOTHING RETURNING id`,
+              [id, userId, authorizationId, name, prefix, sealed.ciphertext, sealed.keyVersion, expiresAtMs],
+            );
+            if (!inserted.rows[0]) continue;
+          } catch (error) {
+            if (isUniqueViolation(error, "totp_devices_one_active_per_grant")) {
+              throw new ApiError(
+                409,
+                "This grant already has an active device. Revoke it before enrolling again.",
+              );
+            }
+            throw error;
+          }
+
+          await db.query("COMMIT");
+          /* The one-time secret leaves only after the transaction commits. */
+          return {
+            version: 1,
+            prefix,
+            secret,
+            algorithm: "SHA1",
+            digits: 6,
+            periodSeconds: 30,
+            expiresAtEpochMs: expiresAtMs,
+            revoked: false,
+          };
+        }
+        throw new ApiError(503, "Could not allocate a device prefix. Please try again.");
+      } catch (error) {
+        await db.query("ROLLBACK").catch(() => {});
+        throw error;
+      } finally {
+        db.release();
       }
-      throw new ApiError(503, "Could not allocate a device prefix. Please try again.");
     } catch (error) {
       if (error instanceof ApiError) throw error;
       throw new AuthStorageError("Device storage is unavailable.");
@@ -184,17 +226,24 @@ export function createTotpEnrollmentService({ pool, encryption, now = Date.now }
       );
       const row = rows[0];
       if (!row) throw new ApiError(404, "Device not found.");
-      return {
-        prefix: row.prefix,
-        deviceName: row.device_name,
-        status: row.status,
-        authorizationId: row.authorization_id,
-        grantStatus: row.grant_status,
-        expiresAtEpochMs: new Date(row.expires_at).getTime(),
-        createdAt: new Date(row.created_at).toISOString(),
-      };
+      return toDeviceStatus(row);
     } catch (error) {
       if (error instanceof ApiError) throw error;
+      throw new AuthStorageError("Device storage is unavailable.");
+    }
+  }
+
+  async function listDevices(userId: number): Promise<DeviceStatus[]> {
+    try {
+      const { rows } = await pool.query(
+        `SELECT d.prefix, d.device_name, d.status, d.authorization_id, d.expires_at, d.created_at,
+                g.status AS grant_status
+           FROM app_private.totp_devices d
+           JOIN app_private.payment_grants g ON g.id = d.authorization_id
+          WHERE d.payer_user_id = $1 ORDER BY d.created_at DESC LIMIT 50`, [userId],
+      );
+      return rows.map(toDeviceStatus);
+    } catch {
       throw new AuthStorageError("Device storage is unavailable.");
     }
   }
@@ -215,7 +264,7 @@ export function createTotpEnrollmentService({ pool, encryption, now = Date.now }
     return getStatus(userId, prefix);
   }
 
-  return { enrollDevice, getStatus, revokeDevice };
+  return { enrollDevice, getStatus, listDevices, revokeDevice };
 }
 
 export type TotpEnrollmentService = ReturnType<typeof createTotpEnrollmentService>;

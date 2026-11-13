@@ -1,10 +1,11 @@
-import { createHash, createHmac, hkdfSync } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
 import { parsePaymentCode, verifyTotp } from "../domain/payment-engine/totp";
 import { ApiError } from "../errors/api-error";
-import type { DataEncryption } from "./data-encryption";
+import { DataEncryptionError, type DataEncryption } from "./data-encryption";
 import type { GrantAuthorityStore } from "./grant-authority-store";
+import { silentLog, type LogEvent } from "./log";
 import {
   isMoney,
   parseMinor,
@@ -15,6 +16,7 @@ import {
   type RedemptionProvider,
 } from "./redemption-provider";
 import { deviceSecretContext } from "./totp-enrollment";
+import { createTotpReplayDigests } from "./totp-replay-digests";
 
 /*
  * Merchant redemption of an offline TOTP payment code.
@@ -47,12 +49,15 @@ export interface PaymentView {
   readonly paymentId: string;
   readonly status: AttemptStatus;
   readonly merchantName: string;
+  readonly payerName: string;
   readonly merchantReceiveRequested: Money;
   readonly payerDebitQuoted?: Money;
   /** receipt: only present once the provider confirmed the payment */
   readonly payerDebitPaid?: Money;
   readonly merchantReceivePaid?: Money;
   readonly completedAt?: string;
+  readonly providerIncomingRef?: string;
+  readonly providerOutgoingRef?: string;
   readonly errorCode?: string;
   readonly createdAt: string;
   readonly updatedAt: string;
@@ -70,11 +75,14 @@ export interface OfflineRedemptionOptions {
   readonly authorities: GrantAuthorityStore;
   readonly provider: RedemptionProvider;
   /** raw 32-byte data key; a separate subkey is derived for code digests */
-  readonly dataKey: Buffer;
+  readonly dataKeys: ReadonlyMap<number, Buffer>;
   readonly now?: () => number;
   /** how long to wait for provider confirmation before answering PROCESSING */
   readonly confirmTimeoutMs?: number;
   readonly confirmPollMs?: number;
+  readonly log?: LogEvent;
+  /** 0 = code's own 30 s window only, 1 = also the adjacent windows (default) */
+  readonly allowedDriftSteps?: 0 | 1;
 }
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
@@ -85,7 +93,16 @@ const REPLAY_GUARD_MINUTES = 10;
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 /** a SUBMITTING row older than this is treated as UNKNOWN (process died mid-call) */
 const STALE_SUBMITTING_MS = 2 * 60_000;
-const ALLOWED_DRIFT_STEPS = 0;
+/*
+ * Accept the code's own 30 s window plus one window either side, so a code
+ * shown near the end of its window still works while the merchant types it.
+ * Safe because every accepted code is claimed once per (device, time step)
+ * AND by a keyed digest over a 10-minute window, whatever step it matched.
+ * Set TOTP_ALLOWED_DRIFT_STEPS=0 for the strict single-window behaviour.
+ */
+const DEFAULT_ALLOWED_DRIFT_STEPS = 1;
+/* a ROTATING grant older than this was left by a process that died mid-rotation */
+const STUCK_ROTATION_MS = 2 * 60_000;
 
 /* one generic answer for unknown prefix, wrong code, expired or revoked device */
 const codeInvalid = () => new ApiError(422, "This payment code is invalid or expired.", "CODE_INVALID");
@@ -113,6 +130,9 @@ interface AttemptRow {
   payer_debit_asset_scale: number | null;
   error_code: string | null;
   merchant_name: string;
+  payer_name: string;
+  provider_incoming_ref: string | null;
+  provider_attempt_ref: string | null;
   payer_debit_paid_value: string | null;
   merchant_receive_paid_value: string | null;
   completed_at: Date | null;
@@ -125,6 +145,7 @@ function toView(row: AttemptRow): PaymentView {
     paymentId: row.id,
     status: row.status,
     merchantName: row.merchant_name,
+    payerName: row.payer_name,
     merchantReceiveRequested: {
       value: String(row.merchant_receive_value),
       assetCode: row.merchant_receive_asset_code,
@@ -158,6 +179,8 @@ function toView(row: AttemptRow): PaymentView {
         }
       : {}),
     ...(row.completed_at ? { completedAt: new Date(row.completed_at).toISOString() } : {}),
+    ...(row.status === "SUCCEEDED" && row.provider_incoming_ref ? { providerIncomingRef: row.provider_incoming_ref } : {}),
+    ...(row.status === "SUCCEEDED" && row.provider_attempt_ref ? { providerOutgoingRef: row.provider_attempt_ref } : {}),
     ...(row.error_code ? { errorCode: row.error_code } : {}),
     createdAt: new Date(row.created_at).toISOString(),
     updatedAt: new Date(row.updated_at).toISOString(),
@@ -167,17 +190,19 @@ function toView(row: AttemptRow): PaymentView {
 const ATTEMPT_SELECT = `SELECT a.id, a.status, a.request_fingerprint, a.merchant_receive_value,
   a.merchant_receive_asset_code, a.merchant_receive_asset_scale, a.payer_debit_value, a.payer_debit_asset_code,
   a.payer_debit_asset_scale, a.error_code, a.payer_debit_paid_value, a.merchant_receive_paid_value,
-  a.completed_at, a.created_at, a.updated_at, m.display_name AS merchant_name
-  FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id`;
-/* an UNKNOWN attempt with no payment at the provider after this long was never submitted */
-const NOT_SUBMITTED_AFTER_MS = 5 * 60_000;
-
+  a.completed_at, a.created_at, a.updated_at, a.provider_incoming_ref, a.provider_attempt_ref,
+  m.display_name AS merchant_name, u.name AS payer_name
+  FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id
+  JOIN app_private.users u ON u.id = a.payer_user_id`;
 export function createOfflineRedemptionService(options: OfflineRedemptionOptions) {
   const { pool, encryption, authorities, provider } = options;
   const now = options.now ?? Date.now;
   const confirmTimeoutMs = options.confirmTimeoutMs ?? 15_000;
   const confirmPollMs = options.confirmPollMs ?? 1_000;
-  const digestKey = Buffer.from(hkdfSync("sha256", options.dataKey, Buffer.alloc(0), "totp-code-replay-guard", 32));
+  const log = options.log ?? silentLog;
+  const allowedDriftSteps = options.allowedDriftSteps ?? DEFAULT_ALLOWED_DRIFT_STEPS;
+  if (allowedDriftSteps !== 0 && allowedDriftSteps !== 1) throw new Error("allowedDriftSteps must be 0 or 1.");
+  const replayDigests = createTotpReplayDigests(options.dataKeys);
 
   async function inTransaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await pool.connect();
@@ -209,20 +234,49 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
 
   async function loadMerchant(userId: number) {
     const { rows } = await pool.query(
-      "SELECT id, receiving_wallet_address FROM app_private.merchants WHERE user_id = $1 AND status = 'ACTIVE'",
+      `SELECT m.id, m.receiving_wallet_address FROM app_private.merchants m
+         JOIN app_private.verified_wallets w ON w.user_id = m.user_id AND w.wallet_address = m.receiving_wallet_address
+        WHERE m.user_id = $1 AND m.status = 'ACTIVE'`,
       [userId],
     );
     return rows[0] as { id: string; receiving_wallet_address: string } | undefined;
   }
 
   /* ends the attempt without debiting: reservation released, claim released */
-  async function finishWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string) {
-    await inTransaction(async (db) => {
-      await db.query(
-        `UPDATE app_private.payment_attempts SET status = $2, error_code = $3, updated_at = now()
-          WHERE id = $1 AND status IN ('AWAITING_AUTHORIZATION', 'SUBMITTING', 'PROCESSING', 'UNKNOWN')`,
-        [attemptId, status, errorCode],
+  async function finishWithoutDebit(
+    attemptId: string, status: "FAILED" | "REJECTED", errorCode: string,
+    allowedStatuses: AttemptStatus[] = ["AWAITING_AUTHORIZATION", "SUBMITTING", "PROCESSING", "UNKNOWN"],
+  ) {
+    const ended = await releaseWithoutDebit(attemptId, status, errorCode, allowedStatuses);
+    if (!ended) return;
+    log("payment.ended_without_debit", { paymentId: attemptId, status, errorCode });
+    /* close the merchant's unpaid incoming payment so it doesn't linger as EXPIRED (best effort) */
+    try {
+      const { rows } = await pool.query(
+        `SELECT a.provider_incoming_ref, m.receiving_wallet_address
+           FROM app_private.payment_attempts a JOIN app_private.merchants m ON m.id = a.merchant_id
+          WHERE a.id = $1 AND a.status IN ('FAILED', 'REJECTED')`,
+        [attemptId],
       );
+      if (rows[0]?.provider_incoming_ref) {
+        await provider.completeIncoming({
+          incomingPaymentId: rows[0].provider_incoming_ref,
+          merchantWalletAddress: rows[0].receiving_wallet_address,
+        });
+      }
+    } catch {
+      log("payment.incoming_close_failed", { paymentId: attemptId });
+    }
+  }
+
+  async function releaseWithoutDebit(attemptId: string, status: "FAILED" | "REJECTED", errorCode: string, allowedStatuses: AttemptStatus[]) {
+    return inTransaction(async (db) => {
+      const changed = await db.query(
+        `UPDATE app_private.payment_attempts SET status = $2, error_code = $3, updated_at = now()
+          WHERE id = $1 AND status = ANY($4::text[]) RETURNING id`,
+        [attemptId, status, errorCode, allowedStatuses],
+      );
+      if (!changed.rows[0]) return false;
       await db.query(
         `UPDATE app_private.spending_reservations r SET state = 'RELEASED', updated_at = now()
            FROM app_private.totp_code_claims c
@@ -233,10 +287,12 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         `UPDATE app_private.totp_code_claims SET state = 'RELEASED' WHERE payment_attempt_id = $1 AND state <> 'COMPLETED'`,
         [attemptId],
       );
+      return true;
     });
   }
 
   async function markUnknown(attemptId: string) {
+    log("payment.unknown", { paymentId: attemptId });
     await inTransaction(async (db) => {
       await db.query(
         `UPDATE app_private.payment_attempts SET status = 'UNKNOWN', updated_at = now()
@@ -258,7 +314,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
 
   /* provider-confirmed success: commit the reservation and count the spend, once */
   async function markSucceeded(attemptId: string, sent: Money, received: Money) {
-    await inTransaction(async (db) => {
+    const changed = await inTransaction(async (db) => {
       const { rows } = await db.query(
         `UPDATE app_private.payment_attempts
             SET status = 'SUCCEEDED', error_code = NULL, updated_at = now(), completed_at = now(),
@@ -267,7 +323,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           RETURNING grant_id, payer_debit_value`,
         [attemptId, parseMinor(sent.value)?.toString() ?? null, parseMinor(received.value)?.toString() ?? null],
       );
-      if (!rows[0]) return; /* already finalized by someone else */
+      if (!rows[0]) return false; /* already finalized by someone else */
       await db.query(
         `UPDATE app_private.spending_reservations r SET state = 'COMMITTED', updated_at = now()
            FROM app_private.totp_code_claims c
@@ -282,7 +338,9 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       await db.query("UPDATE app_private.totp_code_claims SET state = 'COMPLETED' WHERE payment_attempt_id = $1", [
         attemptId,
       ]);
+      return true;
     });
+    if (changed) log("payment.succeeded", { paymentId: attemptId });
   }
 
   /*
@@ -294,7 +352,14 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
   async function freshAuthority(grantId: string): Promise<OutgoingAuthority> {
     const current = await authorities.loadAuthority(pool, grantId);
     if (!current) throw new ApiError(409, "This grant has no stored provider authority.", "GRANT_NOT_SPENDABLE");
-    if (current.expiresAtEpochMs === undefined || current.expiresAtEpochMs > now() + TOKEN_REFRESH_MARGIN_MS) {
+    if (current.expiresAtEpochMs === undefined || !Number.isSafeInteger(current.expiresAtEpochMs)) {
+      await pool.query(
+        "UPDATE app_private.payment_grants SET status = 'REAUTHORIZATION_REQUIRED', updated_at = now() WHERE id = $1 AND status = 'ACTIVE'",
+        [grantId],
+      );
+      throw new ApiError(409, "The payer's authority has no verifiable expiry.", "GRANT_NOT_SPENDABLE");
+    }
+    if (current.expiresAtEpochMs > now() + TOKEN_REFRESH_MARGIN_MS) {
       return current;
     }
     const lock = await pool.query(
@@ -303,22 +368,55 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       [grantId],
     );
     if (!lock.rows[0]) throw new ApiError(503, "The payer's authority is being refreshed. Try again shortly.", "GRANT_BUSY");
+    let rotated: OutgoingAuthority;
     try {
-      const rotated = await provider.rotateAuthority(current);
-      await inTransaction(async (db) => {
-        await authorities.saveAuthority(db, grantId, rotated);
-        await db.query("UPDATE app_private.payment_grants SET status = 'ACTIVE', updated_at = now() WHERE id = $1", [
-          grantId,
-        ]);
-      });
-      return rotated;
+      rotated = await provider.rotateAuthority(current);
     } catch (error) {
       const next = error instanceof ProviderRejectedError ? "REAUTHORIZATION_REQUIRED" : "BLOCKED";
-      await pool.query("UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1", [
-        grantId,
-        next,
-      ]);
+      /* only from ROTATING: a revocation that happened meanwhile wins */
+      await pool.query(
+        "UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1 AND status = 'ROTATING'",
+        [grantId, next],
+      );
+      log("grant.rotation_failed", { authorizationId: grantId, next });
       throw new ApiError(409, "The payer's authority could not be refreshed.", "GRANT_NOT_SPENDABLE");
+    }
+    /* the old token may already be dead, so the new one is always saved */
+    const usable = rotated.accessToken !== current.accessToken && Boolean(rotated.manageUrl) &&
+      Number.isSafeInteger(rotated.expiresAtEpochMs) && rotated.expiresAtEpochMs! > now() + TOKEN_REFRESH_MARGIN_MS;
+    const stillRotating = await inTransaction(async (db) => {
+      await authorities.saveAuthority(db, grantId, rotated);
+      const back = await db.query(
+        "UPDATE app_private.payment_grants SET status = $2, updated_at = now() WHERE id = $1 AND status = 'ROTATING' RETURNING id",
+        [grantId, usable ? "ACTIVE" : "REAUTHORIZATION_REQUIRED"],
+      );
+      return Boolean(back.rows[0]);
+    });
+    if (!stillRotating) {
+      /* revoked (or blocked) while we were rotating: never spend with it */
+      throw new ApiError(409, "The payer's approval changed while it was being refreshed.", "GRANT_NOT_SPENDABLE");
+    }
+    if (!usable) throw new ApiError(409, "The refreshed authority is not verifiable.", "GRANT_NOT_SPENDABLE");
+    return rotated;
+  }
+
+  /*
+   * Token for READ-ONLY provider calls. Access tokens live ~10 minutes, so a
+   * payment confirmed later needs a rotated one. Rotation only happens for an
+   * ACTIVE grant; otherwise the stored token is tried as is.
+   */
+  async function readAuthority(grantId: string): Promise<OutgoingAuthority | undefined> {
+    const current = await authorities.loadAuthority(pool, grantId);
+    if (!current) return undefined;
+    if (current.expiresAtEpochMs === undefined || current.expiresAtEpochMs > now() + TOKEN_REFRESH_MARGIN_MS) {
+      return current;
+    }
+    const { rows } = await pool.query("SELECT status FROM app_private.payment_grants WHERE id = $1", [grantId]);
+    if (rows[0]?.status !== "ACTIVE") return current;
+    try {
+      return await freshAuthority(grantId);
+    } catch {
+      return (await authorities.loadAuthority(pool, grantId)) ?? current;
     }
   }
 
@@ -326,6 +424,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     const { rows } = await pool.query(
       `SELECT a.status, a.provider_attempt_ref, a.provider_incoming_ref, a.provider_quote_ref, a.grant_id,
               a.payer_debit_value, a.payer_debit_asset_code, a.payer_debit_asset_scale, a.updated_at,
+              a.merchant_receive_value, a.merchant_receive_asset_code, a.merchant_receive_asset_scale,
               m.receiving_wallet_address, g.payer_wallet_address
          FROM app_private.payment_attempts a
          JOIN app_private.merchants m ON m.id = a.merchant_id
@@ -340,7 +439,7 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       if (row.status !== "UNKNOWN" || !row.provider_quote_ref) return;
       let found;
       try {
-        const authority = await authorities.loadAuthority(pool, row.grant_id);
+        const authority = await readAuthority(row.grant_id);
         if (!authority) return;
         found = await provider.findOutgoingByQuote({
           payerWalletAddress: row.payer_wallet_address,
@@ -350,12 +449,9 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       } catch {
         return; /* can't tell: stay UNKNOWN, budget held */
       }
-      if (!found) {
-        if (now() - new Date(row.updated_at).getTime() > NOT_SUBMITTED_AFTER_MS) {
-          await finishWithoutDebit(attemptId, "FAILED", "NOT_SUBMITTED");
-        }
-        return;
-      }
+      // Absence from a provider listing is not definitive proof that no debit
+      // happened. Keep the claim and budget reserved until an outcome is found.
+      if (!found) return;
       await pool.query(
         `UPDATE app_private.payment_attempts SET provider_attempt_ref = $2, status = 'PROCESSING', updated_at = now()
           WHERE id = $1 AND status = 'UNKNOWN' AND provider_attempt_ref IS NULL`,
@@ -366,16 +462,23 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     do {
       let outcome;
       try {
-        const authority = await authorities.loadAuthority(pool, row.grant_id);
+        const authority = await readAuthority(row.grant_id);
         if (!authority) return;
         outcome = await provider.readOutcome({
           outgoingPaymentId: row.provider_attempt_ref,
           incomingPaymentId: row.provider_incoming_ref,
+          quoteId: row.provider_quote_ref,
+          payerWalletAddress: row.payer_wallet_address,
           merchantWalletAddress: row.receiving_wallet_address,
           expectedDebit: {
             value: String(row.payer_debit_value),
             assetCode: row.payer_debit_asset_code,
             assetScale: row.payer_debit_asset_scale,
+          },
+          expectedReceive: {
+            value: String(row.merchant_receive_value),
+            assetCode: row.merchant_receive_asset_code,
+            assetScale: row.merchant_receive_asset_scale,
           },
           authority,
         });
@@ -442,13 +545,22 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     );
     const device = devices[0];
     if (!device) throw codeInvalid();
-    const secret = encryption.decrypt(
-      { ciphertext: device.secret_ciphertext, keyVersion: device.key_version },
-      deviceSecretContext(device.id),
-    );
-    const verification = verifyTotp(secret, parsed.code, nowMs, ALLOWED_DRIFT_STEPS);
+    let secret: string;
+    try {
+      secret = encryption.decrypt(
+        { ciphertext: device.secret_ciphertext, keyVersion: device.key_version },
+        deviceSecretContext(device.id),
+      );
+    } catch (error) {
+      if (error instanceof DataEncryptionError) throw codeInvalid();
+      throw error;
+    }
+    const verification = verifyTotp(secret, parsed.code, nowMs, allowedDriftSteps);
     if (!verification.valid) throw codeInvalid();
-    const codeDigest = createHmac("sha256", digestKey).update(`${device.id}:${parsed.code}`).digest();
+    const digestsByVersion = replayDigests(device.id, parsed.code);
+    const codeDigest = digestsByVersion.get(device.key_version);
+    if (!codeDigest) throw codeInvalid();
+    const codeDigests = [...digestsByVersion.values()];
 
     /* 3. claim + reservation, atomically */
     let attemptId: string;
@@ -460,28 +572,33 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
     };
     try {
       ({ attemptId, grant } = await inTransaction(async (db) => {
-        /* lock the device: claims for one device are serialized */
-        const lockedDevice = await db.query(
-          "SELECT status FROM app_private.totp_devices WHERE id = $1 FOR UPDATE",
-          [device.id],
-        );
-        if (lockedDevice.rows[0]?.status !== "ACTIVE") throw codeInvalid();
-
         const { rows: grants } = await db.query(
           `SELECT id, status, authority_source, payer_wallet_address, asset_code, asset_scale,
                   cumulative_cap, per_payment_max_debit, cumulative_spent, valid_from, valid_until
-             FROM app_private.payment_grants WHERE id = $1 AND payer_user_id = $2 FOR UPDATE`,
+             FROM app_private.payment_grants g WHERE id = $1 AND payer_user_id = $2
+              AND EXISTS (SELECT 1 FROM app_private.verified_wallets w
+                           WHERE w.user_id = g.payer_user_id AND w.wallet_address = g.payer_wallet_address)
+              FOR UPDATE`,
           [device.authorization_id, device.payer_user_id],
         );
         const g = grants[0];
         if (!g) throw codeInvalid();
+        /* Match grant revocation's lock order: grant first, then device. */
+        const lockedDevice = await db.query(
+          "SELECT status, expires_at FROM app_private.totp_devices WHERE id = $1 FOR UPDATE",
+          [device.id],
+        );
+        const lockedNow = now();
+        const refreshedVerification = verifyTotp(secret, parsed.code, lockedNow, allowedDriftSteps);
+        if (lockedDevice.rows[0]?.status !== "ACTIVE" || new Date(lockedDevice.rows[0].expires_at).getTime() <= lockedNow ||
+            !refreshedVerification.valid || refreshedVerification.timeStep !== verification.timeStep) throw codeInvalid();
         if (g.authority_source !== "PROVIDER") {
           throw new ApiError(409, "This device is linked to a demo placeholder grant that cannot move money.", "DEMO_GRANT");
         }
         if (
           g.status !== "ACTIVE" ||
-          nowMs < new Date(g.valid_from).getTime() ||
-          nowMs >= new Date(g.valid_until).getTime()
+          lockedNow < new Date(g.valid_from).getTime() ||
+          lockedNow >= new Date(g.valid_until).getTime()
         ) {
           throw new ApiError(409, "The payer's spending approval is not usable right now.", "GRANT_NOT_SPENDABLE");
         }
@@ -489,8 +606,8 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         /* replay guard: same 6 digits on this device recently = refused, whatever the time step */
         const recent = await db.query(
           `SELECT 1 FROM app_private.totp_code_claims
-            WHERE device_id = $1 AND code_digest = $2 AND created_at > now() - make_interval(mins => $3)`,
-          [device.id, codeDigest, REPLAY_GUARD_MINUTES],
+            WHERE device_id = $1 AND code_digest = ANY($2::bytea[]) AND created_at > now() - make_interval(mins => $3)`,
+          [device.id, codeDigests, REPLAY_GUARD_MINUTES],
         );
         if (recent.rows[0]) throw new ApiError(409, "This payment code was already used.", "CODE_ALREADY_USED");
 
@@ -577,7 +694,18 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       await finishWithoutDebit(attemptId, "FAILED", "QUOTE_FAILED");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
+    /* remember the provider refs first, so a rejected quote's incoming payment can be closed */
+    await pool.query(
+      `UPDATE app_private.payment_attempts SET provider_incoming_ref = $2, provider_quote_ref = $3, updated_at = now()
+        WHERE id = $1`,
+      [attemptId, quote.incomingPaymentId, quote.quoteId],
+    );
     const debit = parseMinor(quote.debit.value);
+    if (quote.expiresAtEpochMs !== undefined &&
+        (!Number.isSafeInteger(quote.expiresAtEpochMs) || quote.expiresAtEpochMs <= now())) {
+      await finishWithoutDebit(attemptId, "REJECTED", "QUOTE_EXPIRED");
+      return { payment: toView(await loadAttempt(attemptId)), created: true };
+    }
     if (
       debit === undefined ||
       debit <= 0n ||
@@ -617,12 +745,31 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       await finishWithoutDebit(attemptId, "FAILED", error instanceof ApiError && error.code ? error.code : "GRANT_NOT_SPENDABLE");
       return { payment: toView(await loadAttempt(attemptId)), created: true };
     }
-    const moved = await pool.query(
-      `UPDATE app_private.payment_attempts SET status = 'SUBMITTING', updated_at = now()
-        WHERE id = $1 AND status = 'AWAITING_AUTHORIZATION' RETURNING id`,
-      [attemptId],
-    );
-    if (!moved.rows[0]) return { payment: toView(await loadAttempt(attemptId)), created: true };
+    const moved = await inTransaction(async (db) => {
+      const grantState = await db.query(
+        `SELECT status, valid_from, valid_until FROM app_private.payment_grants
+          WHERE id = $1 AND payer_user_id = $2 FOR UPDATE`,
+        [device.authorization_id, device.payer_user_id],
+      );
+      const deviceState = await db.query(
+        "SELECT status, expires_at FROM app_private.totp_devices WHERE id = $1 FOR UPDATE", [device.id],
+      );
+      const d = deviceState.rows[0];
+      const g = grantState.rows[0];
+      const at = now();
+      if (!d || d.status !== "ACTIVE" || new Date(d.expires_at).getTime() <= at ||
+          !g || g.status !== "ACTIVE" || new Date(g.valid_from).getTime() > at || new Date(g.valid_until).getTime() <= at ||
+          (quote.expiresAtEpochMs !== undefined && quote.expiresAtEpochMs <= at)) return false;
+      const update = await db.query(
+        `UPDATE app_private.payment_attempts SET status = 'SUBMITTING', updated_at = now()
+          WHERE id = $1 AND status = 'AWAITING_AUTHORIZATION' RETURNING id`, [attemptId],
+      );
+      return Boolean(update.rows[0]);
+    });
+    if (!moved) {
+      await finishWithoutDebit(attemptId, "FAILED", "GRANT_NOT_SPENDABLE", ["AWAITING_AUTHORIZATION"]);
+      return { payment: toView(await loadAttempt(attemptId)), created: true };
+    }
     try {
       const { outgoingPaymentId } = await provider.submitPayment({
         payerWalletAddress: grant.payer_wallet_address,
@@ -684,15 +831,30 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
    * gets one read-only provider check. Nothing is ever re-submitted.
    */
   async function reconcilePending(): Promise<{ checked: number }> {
+    const availableVersions = [...options.dataKeys.keys()];
+    /* a rotation that never finished: the old token may be dead and the new one unknown */
+    const stuck = await pool.query(
+      `UPDATE app_private.payment_grants g SET status = 'BLOCKED', updated_at = now()
+        WHERE status = 'ROTATING' AND updated_at < now() - make_interval(secs => $1)
+          AND EXISTS (SELECT 1 FROM app_private.provider_credentials c WHERE c.grant_id = g.id
+                       AND c.kind = 'ACCESS_TOKEN' AND c.key_version = ANY($2::smallint[]))
+        RETURNING g.id`,
+      [STUCK_ROTATION_MS / 1000, availableVersions],
+    );
+    for (const { id } of stuck.rows) log("grant.rotation_abandoned", { authorizationId: id });
     const { rows: stale } = await pool.query(
-      `SELECT id FROM app_private.payment_attempts
-        WHERE status = 'SUBMITTING' AND updated_at < now() - make_interval(secs => $1)`,
-      [STALE_SUBMITTING_MS / 1000],
+      `SELECT a.id FROM app_private.payment_attempts a
+        WHERE a.status = 'SUBMITTING' AND a.updated_at < now() - make_interval(secs => $1)
+          AND EXISTS (SELECT 1 FROM app_private.provider_credentials c WHERE c.grant_id = a.grant_id
+                       AND c.kind = 'ACCESS_TOKEN' AND c.key_version = ANY($2::smallint[]))`,
+      [STALE_SUBMITTING_MS / 1000, availableVersions],
     );
     for (const { id } of stale) await markUnknown(id);
     const { rows } = await pool.query(
-      `SELECT id FROM app_private.payment_attempts WHERE status IN ('PROCESSING', 'UNKNOWN')
-        ORDER BY updated_at LIMIT 50`,
+      `SELECT a.id FROM app_private.payment_attempts a WHERE a.status IN ('PROCESSING', 'UNKNOWN')
+        AND EXISTS (SELECT 1 FROM app_private.provider_credentials c WHERE c.grant_id = a.grant_id
+                     AND c.kind = 'ACCESS_TOKEN' AND c.key_version = ANY($1::smallint[]))
+        ORDER BY a.updated_at LIMIT 50`, [availableVersions],
     );
     for (const { id } of rows) {
       try {

@@ -30,8 +30,16 @@ export function createPaymentsRouter(
   router.get("/payments", requireLogin, perUser(120), controller.list);
   router.get("/payments/:paymentId", requireLogin, perUser(120), controller.get);
 
+  router.post("/payment-grants", requireLogin, perUser(10), grants.start);
+  router.get("/payment-grants/approvals/:approvalId", requireLogin, perUser(120), grants.approval);
   router.get("/payment-grants", requireLogin, perUser(120), grants.list);
   router.get("/payment-grants/:grantId", requireLogin, perUser(120), grants.get);
   router.delete("/payment-grants/:grantId", requireLogin, perUser(20), grants.revoke);
+  /* public: the payer's browser arrives here from the wallet, without an app token */
+  router.get(
+    "/open-payments/callback/:approvalId",
+    rateLimit({ windowMs: 60 * 1000, limit: 30, standardHeaders: "draft-8", legacyHeaders: false }),
+    grants.callback,
+  );
   return router;
 }

@@ -1,5 +1,7 @@
 # Backend payments: architecture and API boundary
 
+> Historical design snapshot. Sections below describe an older cookie-session and proposed-API design. For the current implementation and verification status, use [architecture](ARCHITECTURE.md), [API reference](API.md), and the [sprint tracker](SPRINT_TRACKER.md).
+
 > Open Payments makes digital payments interoperable. Atomic Commits makes them accessible when the payer has no internet connection, using short-lived payment codes, pre-authorized spending limits and online merchant verification.
 
 ## Reading map

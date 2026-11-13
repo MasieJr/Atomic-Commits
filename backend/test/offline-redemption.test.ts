@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { test, type TestContext } from 'node:test';
 
@@ -36,6 +36,15 @@ class FakeProvider implements RedemptionProvider {
   reads = 0;
   rotations = 0;
   cancels = 0;
+  cancelBehaviour: 'ok' | 'reject' | 'unknown' = 'ok';
+  /* the HTTP status a refused cancel carries, like the real adapter */
+  cancelRejectStatus: number | undefined = 404;
+  cancelledUris: string[] = [];
+  completedIncoming: string[] = [];
+  /* server-side approval script */
+  grantStarts: { finishUri: string; clientNonce: string; debitLimit: Money }[] = [];
+  grantFinishes = 0;
+  finishBehaviour: 'ok' | 'fail' | 'small' = 'ok';
   /* what findOutgoingByQuote reports: 'found' = provider did create it */
   lookup: 'found' | 'missing' | 'error' = 'missing';
   private n = 0;
@@ -56,18 +65,51 @@ class FakeProvider implements RedemptionProvider {
     if (this.submitBehaviour === 'unknown') throw new ProviderUnknownError('timeout');
     return { outgoingPaymentId: `https://ilp.interledger-test.dev/outgoing/${this.submits.length}` };
   }
-  async readOutcome() {
+  lastReadToken = '';
+  async readOutcome(args: { authority: OutgoingAuthority }) {
     this.reads += 1;
+    this.lastReadToken = args.authority.accessToken;
     return this.outcome;
   }
   async findOutgoingByQuote(args: { quoteId: string }) {
     if (this.lookup === 'error') throw new ProviderUnknownError('down');
     return this.lookup === 'found' ? { outgoingPaymentId: `${args.quoteId}/outgoing` } : undefined;
   }
-  async cancelGrant() {
+  async cancelGrant(continuation: { uri: string }) {
     this.cancels += 1;
+    this.cancelledUris.push(continuation.uri);
+    if (this.cancelBehaviour === 'reject') throw new ProviderRejectedError('refused', this.cancelRejectStatus);
+    if (this.cancelBehaviour === 'unknown') throw new ProviderUnknownError('timeout');
   }
+  async completeIncoming(args: { incomingPaymentId: string }) {
+    this.completedIncoming.push(args.incomingPaymentId);
+  }
+  async lookupWallet(address: string) {
+    if (address.includes('missing')) throw new Error('no such wallet');
+    return { id: 'https://ilp.interledger-test.dev/payer', assetCode: 'EUR', assetScale: 2, authServer: 'https://auth.interledger-test.dev/' };
+  }
+  async startOutgoingGrant(args: { finishUri: string; clientNonce: string; debitLimit: Money }) {
+    this.grantStarts.push(args);
+    return {
+      redirectUrl: 'https://auth.interledger-test.dev/interact/abc',
+      providerNonce: 'provider-nonce-123',
+      grantRequestUrl: 'https://auth.interledger-test.dev/',
+      continuation: { uri: 'https://auth.interledger-test.dev/continue/abc', accessToken: 'cont-1' },
+    };
+  }
+  async finishOutgoingGrant(args: { requestedDebit: Money }) {
+    this.grantFinishes += 1;
+    if (this.finishBehaviour === 'fail') throw new ProviderUnknownError('nope');
+    return {
+      authority: { accessToken: 'approved-token', manageUrl: 'https://auth.interledger-test.dev/manage/x', expiresAtEpochMs: Date.now() + 600_000 },
+      continuation: { uri: 'https://auth.interledger-test.dev/continue/final', accessToken: 'cont-final' },
+      grantedDebit: this.finishBehaviour === 'small' ? { ...args.requestedDebit, value: '100' } : args.requestedDebit,
+    };
+  }
+  /* runs during a rotation, e.g. to simulate a revocation landing mid-rotation */
+  onRotate?: () => Promise<void>;
   async rotateAuthority(): Promise<OutgoingAuthority> {
+    if (this.onRotate) await this.onRotate();
     this.rotations += 1;
     if (this.rotateBehaviour === 'reject') throw new ProviderRejectedError('no');
     if (this.rotateBehaviour === 'unknown') throw new ProviderUnknownError('?');
@@ -75,16 +117,20 @@ class FakeProvider implements RedemptionProvider {
   }
 }
 
-async function fixture(t: TestContext) {
+async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
   const keyB64 = randomBytes(32).toString('base64');
   const provider = new FakeProvider();
-  const { app, close, reconcilePayments } = createApp({
+  const logs: Record<string, unknown>[] = [];
+  const { app, close, reconcilePayments, reconcileRevocations } = createApp({
     databaseUrl,
     jwtSecret: randomBytes(32).toString('hex'),
     dataEncryptionKey: keyB64,
     redemptionProvider: provider,
     confirmTimeoutMs: 0,
     confirmPollMs: 1,
+    publicBaseUrl: 'https://api.example.test',
+    ...(opts.drift !== undefined ? { allowedDriftSteps: opts.drift } : {}),
+    log: (event, fields) => logs.push({ event, ...fields }),
   });
   const server = app.listen(0, '127.0.0.1');
   const pool = new Pool({ connectionString: databaseUrl });
@@ -121,9 +167,17 @@ async function fixture(t: TestContext) {
     return { token: (body.token ?? body.accessToken)!, userId: body.user.id };
   }
 
+  async function linkForTest(userId: number, address = 'https://ilp.interledger-test.dev/payer') {
+    await pool.query(
+      `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale)
+       VALUES ($1, $2, 'https://auth.interledger-test.dev/', 'EUR', 2)`, [userId, address],
+    );
+  }
+
   /* payer with a PROVIDER grant (tokens stored encrypted) and an enrolled device */
   async function payerWithDevice(opts: { cap?: string; perPayment?: string; source?: string; tokenExpiresAt?: number } = {}) {
     const payer = await register();
+    await linkForTest(payer.userId);
     const { rows } = await pool.query(
       `INSERT INTO app_private.payment_grants
          (payer_user_id, payer_wallet_address, authority_source, asset_code, asset_scale,
@@ -147,11 +201,15 @@ async function fixture(t: TestContext) {
     assert.equal(enroll.status, 201);
     const packet = (await enroll.json()) as { prefix: string; secret: string };
     const code = () => formatPaymentCode(packet.prefix, generateTotp(packet.secret, Date.now()).code);
-    return { ...payer, grantId, packet, code };
+    /* the code that was current `steps` windows ago */
+    const codeAt = (steps: number) =>
+      formatPaymentCode(packet.prefix, generateTotp(packet.secret, Date.now() + steps * 30_000).code);
+    return { ...payer, grantId, packet, code, codeAt };
   }
 
   async function merchant() {
     const m = await register();
+    await linkForTest(m.userId, 'https://ilp.interledger-test.dev/shop');
     await pool.query(
       `INSERT INTO app_private.merchants (user_id, display_name, receiving_wallet_address)
        VALUES ($1, 'Spaza', 'https://ilp.interledger-test.dev/shop')`,
@@ -168,7 +226,14 @@ async function fixture(t: TestContext) {
       json: { credentialType: 'totp-v1', paymentCode, merchantReceive: receive },
     });
 
-  return { call, pool, provider, register, payerWithDevice, merchant, redeem, reconcilePayments };
+  const expireStoredToken = (grantId: string) =>
+    store.saveAuthority(pool, grantId, {
+      accessToken: 'live-token-1',
+      manageUrl: 'https://auth.interledger-test.dev/manage/1',
+      expiresAtEpochMs: Date.now() - 1_000,
+    });
+
+  return { call, pool, provider, store, logs, register, linkForTest, payerWithDevice, merchant, redeem, reconcilePayments, reconcileRevocations, base, expireStoredToken };
 }
 
 test('happy path: merchant redeems an offline code, provider confirms, spend is recorded', { skip }, async (t) => {
@@ -308,6 +373,8 @@ test('a quote above the per-payment limit is rejected before any submit and free
   assert.equal(body.status, 'REJECTED');
   assert.equal(body.errorCode, 'QUOTE_EXCEEDS_LIMIT');
   assert.equal(f.provider.submits.length, 0);
+  /* the merchant's unpaid incoming payment is closed instead of left to expire */
+  assert.equal(f.provider.completedIncoming.length, 1);
   const held = await f.pool.query(
     "SELECT count(*)::int AS n FROM app_private.spending_reservations WHERE grant_id = $1 AND state IN ('RESERVED','HELD_UNKNOWN')",
     [payer.grantId],
@@ -535,6 +602,106 @@ test('provider cancellation is deferred while a payment is unresolved, then comp
   assert.equal(f.provider.cancels, 1);
 });
 
+test('an unclear provider cancellation stays FAILED and the background pass confirms it later', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-retry' });
+  const cancelsOfThisGrant = () => f.provider.cancelledUris.filter((u) => u === uri).length;
+  f.provider.cancelBehaviour = 'unknown';
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'FAILED');
+  assert.equal(cancelsOfThisGrant(), 1);
+
+  f.provider.cancelBehaviour = 'ok';
+  await f.reconcileRevocations();
+  const view = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { token: payer.token })).json()) as {
+    providerRevocation: string;
+  };
+  assert.equal(view.providerRevocation, 'CONFIRMED');
+  assert.equal(cancelsOfThisGrant(), 2);
+
+  /* settled grants are left alone by later passes */
+  await f.reconcileRevocations();
+  assert.equal(cancelsOfThisGrant(), 2);
+});
+
+test('a cancel refused with 404 means the grant is already gone: CONFIRMED, not retried', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-gone' });
+  f.provider.cancelBehaviour = 'reject';
+  f.provider.cancelRejectStatus = 404;
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'CONFIRMED');
+  const line = f.logs.find((l) => l.event === 'grant.revocation.result' && l.authorizationId === payer.grantId);
+  assert.equal(line?.outcome, 'CONFIRMED');
+  assert.equal(line?.httpStatus, 404);
+
+  await f.reconcileRevocations();
+  assert.equal(f.provider.cancelledUris.filter((u) => u === uri).length, 1);
+});
+
+test('a cancel refused with 401 is not proof the grant is gone: FAILED and retried', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-refused' });
+  const cancelsOfThisGrant = () => f.provider.cancelledUris.filter((u) => u === uri).length;
+  f.provider.cancelBehaviour = 'reject';
+  f.provider.cancelRejectStatus = 401;
+
+  const revoked = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { method: 'DELETE', token: payer.token })).json()) as {
+    status: string; providerRevocation: string;
+  };
+  assert.equal(revoked.status, 'REVOKED');
+  assert.equal(revoked.providerRevocation, 'FAILED');
+  const line = f.logs.find((l) => l.event === 'grant.revocation.result' && l.authorizationId === payer.grantId);
+  assert.equal(line?.outcome, 'FAILED');
+  assert.equal(line?.reason, 'PROVIDER_REFUSED');
+  assert.equal(line?.httpStatus, 401);
+
+  /* still refused: the background pass keeps it FAILED */
+  await f.reconcileRevocations();
+  assert.equal(cancelsOfThisGrant(), 2);
+  const { rows } = await f.pool.query('SELECT provider_revocation FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(rows[0].provider_revocation, 'FAILED');
+
+  f.provider.cancelBehaviour = 'ok';
+  await f.reconcileRevocations();
+  const view = (await (await f.call(`/api/payment-grants/${payer.grantId}`, { token: payer.token })).json()) as {
+    providerRevocation: string;
+  };
+  assert.equal(view.providerRevocation, 'CONFIRMED');
+  assert.equal(cancelsOfThisGrant(), 3);
+});
+
+test('the background revocation pass never cancels a grant that is not revoked', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const uri = `https://auth.interledger-test.dev/continue/${payer.grantId}`;
+  await f.store.saveContinuation(f.pool, payer.grantId, { uri, accessToken: 'cont-active' });
+  /* an ACTIVE grant carrying a retryable revocation state must still be ignored */
+  await f.pool.query("UPDATE app_private.payment_grants SET provider_revocation = 'FAILED' WHERE id = $1", [payer.grantId]);
+
+  await f.reconcileRevocations();
+  assert.equal(f.provider.cancelledUris.includes(uri), false);
+  const { rows } = await f.pool.query('SELECT status, provider_revocation FROM app_private.payment_grants WHERE id = $1', [
+    payer.grantId,
+  ]);
+  assert.equal(rows[0].status, 'ACTIVE');
+  assert.equal(rows[0].provider_revocation, 'FAILED');
+});
+
 test('crash recovery: an unclear submit that did reach the provider is found and settled once', { skip }, async (t) => {
   const f = await fixture(t);
   const payer = await f.payerWithDevice();
@@ -575,15 +742,216 @@ test('crash recovery: a process that died mid-submit leaves no double debit', { 
   await f.reconcilePayments();
   assert.equal((await fresh(f, `id = '${paymentId}'`))[0].status, 'UNKNOWN');
 
-  /* still missing well after the fact: it was never submitted, so the hold is released */
+  /* A missing listing is not proof of no debit, even after time has passed. */
   await f.pool.query("UPDATE app_private.payment_attempts SET updated_at = now() - interval '10 minutes' WHERE id = $1", [paymentId]);
   await f.reconcilePayments();
   const [row] = await fresh(f, `id = '${paymentId}'`);
-  assert.equal(row.status, 'FAILED');
-  assert.equal(row.error_code, 'NOT_SUBMITTED');
+  assert.equal(row.status, 'UNKNOWN');
   const held = await f.pool.query(
     "SELECT state FROM app_private.spending_reservations WHERE grant_id = $1", [payer.grantId],
   );
-  assert.deepEqual(held.rows.map((r) => r.state), ['RELEASED']);
+  assert.deepEqual(held.rows.map((r) => r.state), ['HELD_UNKNOWN']);
   assert.equal(f.provider.submits.length, 1);
+});
+
+/* ---------- server-side grant approval ---------- */
+
+function gnapHash(clientNonce: string, providerNonce: string, interactRef: string, grantUrl: string): string {
+  return createHash('sha256').update([clientNonce, providerNonce, interactRef, grantUrl].join('\n'), 'ascii').digest('base64');
+}
+
+async function startApproval(f: Awaited<ReturnType<typeof fixture>>, token: string, body: unknown = {}) {
+  const res = await f.call('/api/payment-grants', { method: 'POST', token, json: body });
+  return res;
+}
+
+test('server-side approval: start, verified callback, grant stored and usable for enrollment', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  await f.linkForTest(payer.userId);
+  const res = await startApproval(f, payer.token, { cumulativeCap: '20000', perPaymentMaxDebit: '1000' });
+  assert.equal(res.status, 202);
+  const started = (await res.json()) as { approvalId: string; authorizationUrl: string; status: string; cumulativeCap: Money };
+  assert.equal(started.status, 'AWAITING_APPROVAL');
+  assert.equal(started.authorizationUrl, 'https://auth.interledger-test.dev/interact/abc');
+  assert.deepEqual(started.cumulativeCap, EUR('20000'));
+  const { finishUri, clientNonce } = f.provider.grantStarts[0];
+  assert.equal(finishUri, `https://api.example.test/api/open-payments/callback/${started.approvalId}`);
+
+  /* nonces/continuation are not stored in plaintext */
+  const stored = await f.pool.query('SELECT secrets_ciphertext FROM app_private.provider_interactions WHERE id = $1', [started.approvalId]);
+  assert.equal((stored.rows[0].secrets_ciphertext as Buffer).includes(Buffer.from(clientNonce)), false);
+
+  const hash = gnapHash(clientNonce, 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/');
+  const cb = await fetch(`${f.base}/api/open-payments/callback/${started.approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(hash)}`);
+  assert.equal(cb.status, 200);
+  assert.equal(cb.headers.get('cache-control'), 'no-store');
+  assert.match(await cb.text(), /Approved/);
+
+  const status = (await (await f.call(`/api/payment-grants/approvals/${started.approvalId}`, { token: payer.token })).json()) as {
+    status: string; authorizationId: string;
+  };
+  assert.equal(status.status, 'APPROVED');
+  const grant = (await (await f.call(`/api/payment-grants/${status.authorizationId}`, { token: payer.token })).json()) as {
+    status: string; authoritySource: string; perPaymentMaxDebit: Money;
+  };
+  assert.equal(grant.status, 'ACTIVE');
+  assert.equal(grant.authoritySource, 'PROVIDER');
+  assert.deepEqual(grant.perPaymentMaxDebit, EUR('1000'));
+
+  /* and the device can be enrolled against it */
+  const enroll = await f.call('/api/devices/totp/enroll', {
+    method: 'POST', token: payer.token, json: { authorizationId: status.authorizationId, deviceName: 'Phone' },
+  });
+  assert.equal(enroll.status, 201);
+
+  /* replaying the callback does nothing */
+  const again = await fetch(`${f.base}/api/open-payments/callback/${started.approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(hash)}`);
+  assert.equal(again.status, 409);
+  assert.equal(f.provider.grantFinishes, 1);
+});
+
+test('a forged or garbled callback is rejected and does not consume the pending approval', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  await f.linkForTest(payer.userId);
+  const { approvalId } = (await (await startApproval(f, payer.token)).json()) as { approvalId: string };
+  const { clientNonce } = f.provider.grantStarts[0];
+
+  for (const qs of ['', '?interact_ref=ref-1', `?interact_ref=ref-1&hash=${encodeURIComponent(gnapHash('wrong', 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/'))}`]) {
+    const res = await fetch(`${f.base}/api/open-payments/callback/${approvalId}${qs}`);
+    assert.equal(res.status, 400);
+  }
+  assert.equal(f.provider.grantFinishes, 0);
+  const ok = await fetch(`${f.base}/api/open-payments/callback/${approvalId}?interact_ref=ref-1&hash=${encodeURIComponent(gnapHash(clientNonce, 'provider-nonce-123', 'ref-1', 'https://auth.interledger-test.dev/'))}`);
+  assert.equal(ok.status, 200);
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${randomUUID()}`)).status, 404);
+});
+
+test('payer refusal, expiry, provider failure and an undersized grant never create a usable grant', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  await f.linkForTest(payer.userId);
+  const status = async (id: string) =>
+    ((await (await f.call(`/api/payment-grants/approvals/${id}`, { token: payer.token })).json()) as { status: string; errorCode?: string });
+  const okHash = (n: number) => gnapHash(f.provider.grantStarts[n].clientNonce, 'provider-nonce-123', 'r', 'https://auth.interledger-test.dev/');
+
+  const denied = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${denied}?result=grant_rejected`)).status, 400);
+  assert.equal((await status(denied)).status, 'DENIED');
+
+  const expired = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  await f.pool.query("UPDATE app_private.provider_interactions SET expires_at = now() - interval '1 second' WHERE id = $1", [expired]);
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${expired}?interact_ref=r&hash=${encodeURIComponent(okHash(1))}`)).status, 410);
+  assert.equal((await status(expired)).status, 'EXPIRED');
+
+  f.provider.finishBehaviour = 'fail';
+  const failed = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${failed}?interact_ref=r&hash=${encodeURIComponent(okHash(2))}`)).status, 502);
+  assert.equal((await status(failed)).status, 'FAILED');
+
+  f.provider.finishBehaviour = 'small';
+  const small = ((await (await startApproval(f, payer.token)).json()) as { approvalId: string }).approvalId;
+  assert.equal((await fetch(`${f.base}/api/open-payments/callback/${small}?interact_ref=r&hash=${encodeURIComponent(okHash(3))}`)).status, 502);
+  assert.equal((await status(small)).errorCode, 'GRANT_TOO_SMALL');
+
+  const grants = (await (await f.call('/api/payment-grants', { token: payer.token })).json()) as { grants: unknown[] };
+  assert.equal(grants.grants.length, 0);
+  assert.ok(f.provider.cancels >= 3, 'abandoned grants are cancelled at the provider');
+});
+
+test('approvals are private and inputs are validated', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.register();
+  const other = await f.register();
+  assert.equal((await f.call('/api/payment-grants', { method: 'POST', json: { walletAddress: 'x' } })).status, 401);
+  assert.equal((await startApproval(f, payer.token)).status, 409);
+  await f.linkForTest(payer.userId);
+  for (const body of [{ walletAddress: '' }, { cumulativeCap: 500 }, { cumulativeCap: '100', perPaymentMaxDebit: '200' }, { cumulativeCap: '9999999' }]) {
+    assert.equal((await startApproval(f, payer.token, body)).status, 400, JSON.stringify(body));
+  }
+  assert.equal((await startApproval(f, payer.token, { walletAddress: 'https://ilp.interledger-test.dev/other' })).status, 400);
+  const { approvalId } = (await (await startApproval(f, payer.token)).json()) as { approvalId: string };
+  assert.equal((await f.call(`/api/payment-grants/approvals/${approvalId}`, { token: other.token })).status, 404);
+});
+
+/* ---------- verification fixes ---------- */
+
+test('a code from the previous 30 s window is still accepted (default tolerance), once only', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  const previous = payer.codeAt(-1);
+
+  const res = await f.redeem(shop.token, previous);
+  assert.equal(res.status, 202);
+  assert.equal(((await res.json()) as { status: string }).status, 'SUCCEEDED');
+  /* the same code again, any key: refused */
+  const again = await f.redeem(shop.token, previous);
+  assert.equal(again.status, 409);
+  assert.equal(((await again.json()) as { code: string }).code, 'CODE_ALREADY_USED');
+  /* two windows old: too old */
+  const old = await f.redeem(shop.token, payer.codeAt(-2));
+  assert.equal(old.status, 422);
+  assert.equal(f.provider.submits.length, 1);
+});
+
+test('strict mode (TOTP_ALLOWED_DRIFT_STEPS=0) refuses the previous window', { skip }, async (t) => {
+  const f = await fixture(t, { drift: 0 });
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  const res = await f.redeem(shop.token, payer.codeAt(-1));
+  assert.equal(res.status, 422);
+  assert.equal((await f.redeem(shop.token, payer.code())).status, 202);
+});
+
+test('a payment confirmed after its token expired is read with a rotated token', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  f.provider.outcome = { kind: 'PENDING' };
+  const { paymentId, status } = (await (await f.redeem(shop.token, payer.code())).json()) as { paymentId: string; status: string };
+  assert.equal(status, 'PROCESSING');
+
+  /* ten minutes later the stored token has expired */
+  f.provider.outcome = { kind: 'SUCCEEDED', sent: ZAR('186'), received: EUR('10') };
+  await f.expireStoredToken(payer.grantId);
+
+  const view = (await (await f.call(`/api/payments/${paymentId}`, { token: payer.token })).json()) as { status: string };
+  assert.equal(view.status, 'SUCCEEDED');
+  assert.equal(f.provider.rotations, 1);
+  assert.equal(f.provider.lastReadToken, 'rotated-1');
+  assert.equal(f.provider.submits.length, 1);
+});
+
+test('a revocation that lands during a token rotation is never undone, and nothing is paid', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice({ tokenExpiresAt: Date.now() + 5_000 });
+  const shop = await f.merchant();
+  const code = payer.code();
+  f.provider.onRotate = async () => {
+    await f.pool.query("UPDATE app_private.payment_grants SET status = 'REVOKED' WHERE id = $1", [payer.grantId]);
+  };
+  const body = (await (await f.redeem(shop.token, code)).json()) as { status: string; errorCode: string };
+  assert.equal(body.status, 'FAILED');
+  assert.equal(body.errorCode, 'GRANT_NOT_SPENDABLE');
+  const g = await f.pool.query('SELECT status FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(g.rows[0].status, 'REVOKED');
+  assert.equal(f.provider.submits.length, 0);
+});
+
+test('a grant left in ROTATING by a dead process is blocked by the background pass', { skip }, async (t) => {
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const fresh = await f.payerWithDevice();
+  await f.pool.query(
+    "UPDATE app_private.payment_grants SET status = 'ROTATING', updated_at = now() - interval '5 minutes' WHERE id = $1",
+    [payer.grantId],
+  );
+  await f.pool.query("UPDATE app_private.payment_grants SET status = 'ROTATING', updated_at = now() WHERE id = $1", [fresh.grantId]);
+  await f.reconcilePayments();
+  const rows = await f.pool.query('SELECT id, status FROM app_private.payment_grants WHERE id = ANY($1)', [[payer.grantId, fresh.grantId]]);
+  const byId = Object.fromEntries(rows.rows.map((r) => [r.id, r.status]));
+  assert.equal(byId[payer.grantId], 'BLOCKED');
+  assert.equal(byId[fresh.grantId], 'ROTATING', 'a rotation in progress right now is left alone');
 });
