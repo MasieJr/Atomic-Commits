@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await configureDependencies();
+  final initialization = configureDependencies();
   runApp(const AtomicCommitsApp());
+  await initialization;
 }

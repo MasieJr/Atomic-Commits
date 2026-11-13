@@ -13,6 +13,13 @@
     body { display: grid; place-items: center; background: #f9efdf; }
     .phone-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
     #flutter-host { position: relative; width: 100%; height: 100%; overflow: hidden; }
+    #app-loader { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: #f9efdf; color: #071b36; font: 700 20px Georgia, serif; }
+    #app-loader div { display: grid; justify-items: center; gap: 20px; }
+    #app-loader span { width: 25px; height: 25px; border: 3px solid #d9e1f5; border-top-color: #0c42c9; border-radius: 50%; animation: loading 0.9s linear infinite; }
+    #app-loader p { margin: 0; color: #5f6b7c; font: 14px Arial, sans-serif; }
+    #app-loader button { border: 0; border-radius: 10px; padding: 10px 20px; background: #0c42c9; color: white; font: 700 14px Arial, sans-serif; }
+    @keyframes loading { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { #app-loader span { animation: none; } }
     @media (min-width: 700px) and (min-height: 560px) {
       body { background: #e9eef5; }
       .phone-frame {
@@ -28,7 +35,21 @@
   </style>
 </head>
 <body>
-  <div class="phone-frame"><div id="flutter-host"></div></div>
+  <div class="phone-frame"><div id="flutter-host"></div><div id="app-loader" role="status" aria-label="Loading Atomic Commits"><div>Atomic Commits<span aria-hidden="true"></span><p id="loading-message">Starting the app…</p><button id="reload-app" hidden>Retry</button></div></div></div>
+  <script>
+    const loader = document.getElementById('app-loader');
+    window.addEventListener('flutter-first-frame', function () {
+      loader?.remove();
+    }, { once: true });
+    window.setTimeout(function () {
+      if (!loader?.isConnected) return;
+      document.getElementById('loading-message').textContent = 'Taking longer than expected.';
+      document.getElementById('reload-app').hidden = false;
+    }, 15000);
+    document.getElementById('reload-app').addEventListener('click', function () {
+      window.location.reload();
+    });
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
