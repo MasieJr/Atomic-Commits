@@ -1,13 +1,34 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+  <!-- Flutter replaces this when building with --base-href. -->
   <base href="$FLUTTER_BASE_HREF">
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta name="description" content="Atomic Commits payer and merchant app.">
+  <meta name="theme-color" content="#f9efdf">
+  <meta name="description" content="Atomic Commits — join the colony. Everyday payments by code.">
   <title>Atomic Commits</title>
+  <style>
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body { display: grid; place-items: center; background: #f9efdf; }
+    .phone-frame { position: relative; width: 100%; height: 100%; overflow: hidden; }
+    #flutter-host { position: relative; width: 100%; height: 100%; overflow: hidden; }
+    @media (min-width: 700px) and (min-height: 560px) {
+      body { background: #e9eef5; }
+      .phone-frame {
+        box-sizing: border-box;
+        width: 410px;
+        height: min(860px, calc(100vh - 48px));
+        border: 8px solid #18283d;
+        border-radius: 36px;
+        background: #f9efdf;
+        box-shadow: 0 20px 60px rgba(24, 40, 61, 0.24);
+      }
+    }
+  </style>
 </head>
 <body>
+  <div class="phone-frame"><div id="flutter-host"></div></div>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

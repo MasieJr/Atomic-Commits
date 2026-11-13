@@ -35,9 +35,37 @@ export type ProviderOutcome =
   | { readonly kind: "PENDING" };
 
 /** The provider definitely refused (4xx, not a timeout): nothing was debited. */
-export class ProviderRejectedError extends Error {}
+export class ProviderRejectedError extends Error {
+  constructor(
+    message: string,
+    /* bare status for logs only; never the provider's text */
+    readonly httpStatus?: number,
+  ) {
+    super(message);
+  }
+}
+/** Closed, data-free classification of an unclear provider failure; never provider text. */
+export type ProviderErrorKind =
+  | "HTTP_5XX"
+  | "HTTP_408"
+  | "HTTP_4XX_VALIDATION"
+  | "RESPONSE_VALIDATION"
+  | "NETWORK"
+  | "URL_NOT_ALLOWED"
+  | "OTHER";
+export interface ProviderErrorDetail {
+  readonly errorKind: ProviderErrorKind;
+  readonly httpStatus?: number;
+}
 /** We cannot tell what happened (timeout, 5xx, bad response): treat as UNKNOWN. */
-export class ProviderUnknownError extends Error {}
+export class ProviderUnknownError extends Error {
+  constructor(
+    message: string,
+    readonly detail?: ProviderErrorDetail,
+  ) {
+    super(message);
+  }
+}
 
 export interface RedemptionProvider {
   /** Create a fresh incoming payment at the merchant and a quote from the payer. */
@@ -63,8 +91,11 @@ export interface RedemptionProvider {
   readOutcome(args: {
     outgoingPaymentId: string;
     incomingPaymentId: string;
+    quoteId: string;
+    payerWalletAddress: string;
     merchantWalletAddress: string;
     expectedDebit: Money;
+    expectedReceive: Money;
     authority: OutgoingAuthority;
   }): Promise<ProviderOutcome>;
 
@@ -84,6 +115,65 @@ export interface RedemptionProvider {
 
   /** Cancel the payer's grant at the provider (revocation). */
   cancelGrant(continuation: { uri: string; accessToken: string }): Promise<void>;
+
+  /** Close an unpaid incoming payment at the merchant (best effort, after a failed attempt). */
+  completeIncoming(args: { incomingPaymentId: string; merchantWalletAddress: string }): Promise<void>;
+
+  /** Resolve a wallet address to its canonical id, asset and authorization server. */
+  lookupWallet(address: string): Promise<WalletInfo>;
+
+  /**
+   * Start an INTERACTIVE outgoing-payment grant. The payer approves in the
+   * wallet, which then redirects the browser to finishUri.
+   */
+  startOutgoingGrant(args: {
+    wallet: WalletInfo;
+    debitLimit: Money;
+    finishUri: string;
+    clientNonce: string;
+  }): Promise<StartedGrant>;
+
+  /**
+   * Continue the grant after a VERIFIED callback and validate what the provider
+   * actually granted (scope, payer, debit cap). Throws if anything is off.
+   */
+  finishOutgoingGrant(args: {
+    continuation: GrantContinuation;
+    continueAfterMs?: number;
+    interactRef: string;
+    wallet: WalletInfo;
+    requestedDebit: Money;
+  }): Promise<FinishedGrant>;
+}
+
+export interface WalletInfo {
+  readonly id: string;
+  readonly assetCode: string;
+  readonly assetScale: number;
+  readonly authServer: string;
+  readonly publicName?: string;
+}
+
+export interface GrantContinuation {
+  readonly uri: string;
+  readonly accessToken: string;
+}
+
+export interface StartedGrant {
+  readonly redirectUrl: string;
+  /** provider nonce for the callback hash */
+  readonly providerNonce: string;
+  /** the exact URL the grant request was sent to (part of the callback hash) */
+  readonly grantRequestUrl: string;
+  readonly continuation: GrantContinuation;
+  readonly continueAfterMs?: number;
+}
+
+export interface FinishedGrant {
+  readonly authority: OutgoingAuthority;
+  readonly continuation: GrantContinuation;
+  /** the provider's own returned cap (may be narrower than requested) */
+  readonly grantedDebit: Money;
 }
 
 const MINOR_PATTERN = /^(0|[1-9][0-9]{0,17})$/;

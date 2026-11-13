@@ -1,8 +1,8 @@
 # Atomic Commits
 
-Open Payments hackathon prototype for offline-capable delegated payments.
+Open Payments prototype for an offline payer and an online merchant. The Flutter app registers independent users, links Test Wallet addresses through provider consent, generates TOTP payment codes locally, and submits merchant redemptions to the backend.
 
-The current demo is a static proof of concept showing a buyer-generated, short-lived payment authorization that a merchant can verify and settle over Open Payments.
+The complete live two-user flow is not yet verified. See the [sprint tracker](docs/SPRINT_TRACKER.md) for results and blockers, and the [demo runbook](docs/DEMO_RUNBOOK.md) for configuration and recording steps.
 
 ## Demo
 
@@ -12,9 +12,9 @@ This repository is intended to be published with GitHub Pages from the `main` br
 
 - one payer ↔ Atomic Commits setup relationship, rather than pairing with every shop
 - portable payer alias + offline-generated verification code
-- short-lived authorization, up to 30 minutes
+- locally generated codes rotate every 30 seconds
 - single-use redemption / replay rejection
-- merchant supplies the eventual Open Payments recipient at redemption
+- the merchant receives funds in the verified wallet linked to their account
 - paper is only one possible transport; QR, SMS and human-readable codes are also possible
 
 Hackathon work in progress.
