@@ -28,6 +28,7 @@ class AuthRepository {
       await _apiClient.dio.post(
         ApiEndpoints.logout,
         data: {'refreshToken': refreshToken},
+        options: Options(headers: {'Authorization': null}),
       );
     } catch (_) {
       // Local logout must succeed even when revocation is unavailable.
@@ -50,6 +51,7 @@ class AuthRepository {
       response = await _apiClient.dio.post(
         ApiEndpoints.refresh,
         data: {'refreshToken': refreshToken},
+        options: Options(headers: {'Authorization': null}),
       );
     } on DioException catch (error) {
       if (error.response?.statusCode == 401) return null;

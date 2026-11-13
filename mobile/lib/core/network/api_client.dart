@@ -61,12 +61,28 @@ class ApiClient {
       InterceptorsWrapper(
         onRequest: (options, handler) {
           final expected = options.extra['retry_generation'];
-          if (expected != null && expected != _generation) {
+          final authorization = options.headers['Authorization'];
+          final bearer =
+              authorization is String && authorization.startsWith('Bearer ')
+              ? authorization.substring(7)
+              : null;
+          if ((expected != null && expected != _generation) ||
+              (bearer != null && bearer != authToken)) {
             handler.reject(_accountChanged(options));
             return;
           }
           options.extra['auth_generation'] = _generation;
+          options.extra['authenticated_request'] = bearer != null;
           handler.next(options);
+        },
+        onResponse: (response, handler) {
+          final options = response.requestOptions;
+          if (options.extra['authenticated_request'] == true &&
+              options.extra['auth_generation'] != _generation) {
+            handler.reject(_accountChanged(options));
+            return;
+          }
+          handler.next(response);
         },
         onError: (error, handler) async {
           final options = error.requestOptions;

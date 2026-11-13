@@ -143,6 +143,30 @@ class _RefreshServer implements HttpClientAdapter {
   void close({bool force = false}) {}
 }
 
+class _ControlledAdapter implements HttpClientAdapter {
+  _ControlledAdapter(this.handle);
+  final Future<ResponseBody> Function(RequestOptions) handle;
+
+  @override
+  Future<ResponseBody> fetch(
+    RequestOptions options,
+    Stream<Uint8List>? requestStream,
+    Future<void>? cancelFuture,
+  ) => handle(options);
+
+  @override
+  void close({bool force = false}) {}
+}
+
+ResponseBody _response(int status, [String body = '{}']) =>
+    ResponseBody.fromString(
+      body,
+      status,
+      headers: {
+        Headers.contentTypeHeader: ['application/json'],
+      },
+    );
+
 AuthRepository _repository(_AuthServer server) {
   final dio = Dio(BaseOptions(baseUrl: 'http://localhost:3000/api'))
     ..httpClientAdapter = server;
@@ -156,6 +180,145 @@ AuthRepository _repository(_AuthServer server) {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test(
+    'queued initial request cannot be dispatched or retried as another account',
+    () async {
+      final queued = Completer<void>();
+      final release = Completer<void>();
+      final headers = <Object?>[];
+      final dio = Dio(BaseOptions(baseUrl: 'http://localhost/api'));
+      dio.httpClientAdapter = _ControlledAdapter((options) async {
+        headers.add(options.headers['Authorization']);
+        return _response(
+          options.headers['Authorization'] == 'Bearer user-b' ? 200 : 401,
+        );
+      });
+      dio.interceptors.add(
+        InterceptorsWrapper(
+          onRequest: (options, handler) async {
+            if (options.extra['retried_after_refresh'] != true) {
+              queued.complete();
+              await release.future;
+            }
+            handler.next(options);
+          },
+        ),
+      );
+      final client = ApiClient(client: dio)..setAuthToken('user-a');
+      client.onRefreshRequest = (_, _) async => null;
+      final request = dio
+          .get('/payments')
+          .then<Object>((value) => value, onError: (Object error) => error);
+      await queued.future;
+      client.clearAuthToken();
+      client.setAuthToken('user-b');
+      release.complete();
+      final result = await request;
+      expect(
+        result,
+        isA<DioException>().having(
+          (e) => e.type,
+          'type',
+          DioExceptionType.cancel,
+        ),
+      );
+      expect(headers, isEmpty);
+    },
+  );
+
+  test('authenticated success after account change is not delivered', () async {
+    final dispatched = Completer<void>();
+    final release = Completer<void>();
+    final dio = Dio(BaseOptions(baseUrl: 'http://localhost/api'));
+    dio.httpClientAdapter = _ControlledAdapter((options) async {
+      dispatched.complete();
+      await release.future;
+      return _response(200, '{"owner":"a"}');
+    });
+    final client = ApiClient(client: dio)..setAuthToken('user-a');
+    final request = dio
+        .get('/payments')
+        .then<Object>((value) => value, onError: (Object error) => error);
+    await dispatched.future;
+    client.clearAuthToken();
+    client.setAuthToken('user-b');
+    release.complete();
+    expect(
+      await request,
+      isA<DioException>().having(
+        (e) => e.type,
+        'type',
+        DioExceptionType.cancel,
+      ),
+    );
+  });
+
+  test(
+    'successful refresh retry after account change is not delivered',
+    () async {
+      final retryDispatched = Completer<void>();
+      final release = Completer<void>();
+      final dio = Dio(BaseOptions(baseUrl: 'http://localhost/api'));
+      dio.httpClientAdapter = _ControlledAdapter((options) async {
+        if (options.headers['Authorization'] == 'Bearer old') {
+          return _response(401);
+        }
+        retryDispatched.complete();
+        await release.future;
+        return _response(200, '{"owner":"a"}');
+      });
+      final client = ApiClient(client: dio)..setAuthToken('old');
+      client.onRefreshRequest = (_, _) async {
+        client.setAuthToken('new');
+        return 'new';
+      };
+      final request = dio
+          .get('/payments')
+          .then<Object>((value) => value, onError: (Object error) => error);
+      await retryDispatched.future;
+      client.clearAuthToken();
+      client.setAuthToken('user-b');
+      release.complete();
+      expect(
+        await request,
+        isA<DioException>().having(
+          (e) => e.type,
+          'type',
+          DioExceptionType.cancel,
+        ),
+      );
+    },
+  );
+
+  test(
+    'a late 401 from the same session retries with the rotated token',
+    () async {
+      final dispatched = Completer<void>();
+      final release = Completer<void>();
+      final headers = <Object?>[];
+      final dio = Dio(BaseOptions(baseUrl: 'http://localhost/api'));
+      dio.httpClientAdapter = _ControlledAdapter((options) async {
+        final authorization = options.headers['Authorization'];
+        headers.add(authorization);
+        if (authorization == 'Bearer old') {
+          dispatched.complete();
+          await release.future;
+          return _response(401);
+        }
+        return _response(200);
+      });
+      final client = ApiClient(client: dio)..setAuthToken('old');
+      client.onRefreshRequest = (_, _) async =>
+          throw StateError('should not refresh twice');
+      final request = dio.get('/payments');
+      await dispatched.future;
+      client.setAuthToken('new');
+      release.complete();
+      expect((await request).statusCode, 200);
+      expect(headers, ['Bearer old', 'Bearer new']);
+    },
+  );
 
   test('concurrent expiry rotates once and survives restart', () async {
     FlutterSecureStorage.setMockInitialValues({});
