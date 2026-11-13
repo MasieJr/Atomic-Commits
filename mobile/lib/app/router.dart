@@ -6,7 +6,6 @@ import 'package:atomic_commits/features/auth/screens/login_screen.dart';
 import 'package:atomic_commits/features/auth/screens/signup_screen.dart';
 import 'package:atomic_commits/features/dashboard/screens/dashboard_screen.dart';
 import 'package:atomic_commits/features/merchant/screens/enter_code_screen.dart';
-import 'package:atomic_commits/features/merchant/screens/merchant_home_screen.dart';
 import 'package:atomic_commits/features/merchant/screens/scan_qr_screen.dart';
 import 'package:atomic_commits/features/payer/screens/payer_home_screen.dart';
 import 'package:atomic_commits/features/profile/screens/profile_screen.dart';
@@ -156,7 +155,7 @@ final appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.merchant,
       name: 'merchant',
-      builder: (context, state) => const MerchantHomeScreen(),
+      builder: (context, state) => const EnterCodeScreen(),
       routes: [
         GoRoute(
           path: 'scan',
@@ -166,7 +165,7 @@ final appRouter = GoRouter(
         GoRoute(
           path: 'enter-code',
           name: 'merchant-enter-code',
-          builder: (context, state) => const EnterCodeScreen(),
+          redirect: (context, state) => AppRoutes.merchant,
         ),
       ],
     ),

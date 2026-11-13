@@ -31,8 +31,12 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
   bool _ready = false;
   bool _busy = false;
   bool _unknownSubmission = false;
+  bool _walletMissing = false;
+  bool _needsName = false;
 
   Dio get _api => getIt<ApiClient>().dio;
+  bool get _currentOwner =>
+      mounted && getIt<AuthController>().user?.id == _ownerId;
 
   @override
   void initState() {
@@ -60,38 +64,89 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     return 'Could not reach the server. Check your connection.';
   }
 
+  bool _validName(String value) =>
+      value.length >= 2 &&
+      value.length <= 80 &&
+      !RegExp(r'[\x00-\x1f\x7f]').hasMatch(value);
+
+  void _useReceivingSetup(Map<String, dynamic> merchant) {
+    final wallet = _wallet!;
+    setState(() {
+      _needsName = false;
+      if (merchant['status'] != 'ACTIVE') {
+        _ready = false;
+        _message = 'Receiving payments is unavailable for this account.';
+      } else if (merchant['walletAddress'] != wallet['address']) {
+        _ready = false;
+        _message =
+            'The receiving wallet does not match your verified wallet. '
+            'Review your wallet before receiving payments.';
+      } else {
+        _ready = true;
+        _message = null;
+      }
+    });
+  }
+
+  Future<Map<String, dynamic>> _createReceivingSetup(String name) async {
+    final response = await _api.post(
+      '/merchant',
+      data: {'displayName': name, 'createOnly': true},
+    );
+    return Map<String, dynamic>.from(response.data as Map);
+  }
+
   Future<void> _loadWallet() async {
+    if (!_currentOwner) return;
+    setState(() {
+      _loading = true;
+      _ready = false;
+      _walletMissing = false;
+      _needsName = false;
+      _message = null;
+    });
     try {
       final response = await _api.get('/wallet');
-      final wallet = response.data['wallet'];
-      if (mounted && getIt<AuthController>().user?.id == _ownerId) {
+      if (!_currentOwner) return;
+      final value = response.data['wallet'];
+      if (value == null) {
         setState(() {
-          _wallet = wallet == null
-              ? null
-              : Map<String, dynamic>.from(wallet as Map);
-          _loading = false;
-          _message = wallet == null
-              ? 'Connect a verified wallet before activating checkout.'
-              : null;
+          _wallet = null;
+          _walletMissing = true;
+          _message = 'Connect a verified wallet before receiving payments.';
         });
+        return;
       }
+      _wallet = Map<String, dynamic>.from(value as Map);
+
+      final result = await _api.get('/merchant');
+      if (!_currentOwner) return;
+      final existing = result.data['merchant'];
+      Map<String, dynamic> merchant;
+      if (existing == null) {
+        final name = _merchantName.text.trim();
+        if (!_validName(name)) {
+          setState(() => _needsName = true);
+          return;
+        }
+        merchant = await _createReceivingSetup(name);
+        if (!_currentOwner) return;
+      } else {
+        merchant = Map<String, dynamic>.from(existing as Map);
+      }
+      _useReceivingSetup(merchant);
     } catch (error) {
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _message = _error(error);
-        });
-      }
+      if (_currentOwner) setState(() => _message = _error(error));
+    } finally {
+      if (_currentOwner) setState(() => _loading = false);
     }
   }
 
   Future<void> _activate() async {
-    if (getIt<AuthController>().user?.id != _ownerId) return;
+    if (!_currentOwner || _busy) return;
     final name = _merchantName.text.trim();
-    if (name.length < 2 || name.length > 80) {
-      setState(
-        () => _message = 'Enter a merchant name between 2 and 80 characters.',
-      );
+    if (!_validName(name)) {
+      setState(() => _message = 'Enter a name between 2 and 80 characters.');
       return;
     }
     setState(() {
@@ -99,14 +154,12 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
       _message = null;
     });
     try {
-      await _api.post('/merchant', data: {'displayName': name});
-      if (mounted && getIt<AuthController>().user?.id == _ownerId) {
-        setState(() => _ready = true);
-      }
+      final merchant = await _createReceivingSetup(name);
+      if (_currentOwner) _useReceivingSetup(merchant);
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (_currentOwner) setState(() => _message = _error(error));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (_currentOwner) setState(() => _busy = false);
     }
   }
 
@@ -154,7 +207,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
         );
       }
     } catch (error) {
-      if (!mounted) return;
+      if (!_currentOwner) return;
       final ambiguous =
           error is! DioException ||
           error.response == null ||
@@ -166,7 +219,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             : _error(error);
       });
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (_currentOwner) setState(() => _busy = false);
     }
   }
 
@@ -174,7 +227,10 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     if (getIt<AuthController>().user?.id != _ownerId) return;
     final payment = _payment;
     if (payment == null) return;
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _message = null;
+    });
     try {
       final response = await _api.get(
         '/payments/${payment.paymentId}',
@@ -189,9 +245,9 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
         );
       }
     } catch (error) {
-      if (mounted) setState(() => _message = _error(error));
+      if (_currentOwner) setState(() => _message = _error(error));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      if (_currentOwner) setState(() => _busy = false);
     }
   }
 
@@ -200,36 +256,69 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     final wallet = _wallet;
     final payment = _payment;
     return Scaffold(
-      appBar: AppBar(title: const Text('Merchant checkout')),
+      appBar: AppBar(title: const Text('Receive payment')),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [
           if (_loading)
             const Center(child: CircularProgressIndicator())
-          else if (wallet == null) ...[
+          else if (_walletMissing) ...[
             TextButton(
               onPressed: () => context.go(AppRoutes.wallet),
-              child: const Text('Open wallet onboarding'),
+              child: const Text('Connect a wallet'),
             ),
             TextButton(onPressed: _loadWallet, child: const Text('Refresh')),
-          ] else if (!_ready) ...[
-            const Text('Payments will be received by your verified wallet:'),
-            SelectableText(wallet['address'] as String),
+          ] else if (_needsName) ...[
+            const Text('Choose the name shown when you receive payments.'),
             const SizedBox(height: 16),
             TextField(
               controller: _merchantName,
-              decoration: const InputDecoration(labelText: 'Merchant name'),
+              decoration: const InputDecoration(labelText: 'Receiving name'),
             ),
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: _busy ? null : _activate,
-              child: const Text('Activate merchant checkout'),
+              style: ElevatedButton.styleFrom(
+                disabledBackgroundColor: Theme.of(context).colorScheme.primary,
+                disabledForegroundColor: Theme.of(context)
+                    .colorScheme
+                    .onPrimary,
+              ),
+              child: _busy
+                  ? const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Text('Saving...'),
+                      ],
+                    )
+                  : const Text('Continue'),
             ),
+          ] else if (!_ready) ...[
+            TextButton(onPressed: _loadWallet, child: const Text('Retry')),
+            if (wallet != null)
+              TextButton(
+                onPressed: () => context.go(AppRoutes.wallet),
+                child: const Text('Review wallet'),
+              ),
           ] else if (payment != null) ...[
             Text(
               payment.isCompleted
                   ? 'Payment confirmed'
-                  : 'Payment ${payment.displayStatus.toLowerCase()}',
+                  : switch (payment.status) {
+                      'FAILED' => 'Payment failed',
+                      'REJECTED' => 'Payment rejected',
+                      'UNKNOWN' => 'Payment status unknown',
+                      _ => 'Payment processing',
+                    },
               style: Theme.of(context).textTheme.headlineSmall,
             ),
             const SizedBox(height: 12),
@@ -244,7 +333,7 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                 !['FAILED', 'REJECTED'].contains(payment.status))
               TextButton(
                 onPressed: _busy ? null : _refreshPayment,
-                child: const Text('Check status'),
+                child: Text(_busy ? 'Checking status...' : 'Check status'),
               ),
             if (payment.isCompleted ||
                 ['FAILED', 'REJECTED'].contains(payment.status))
@@ -259,10 +348,10 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
           ] else if (_unknownSubmission) ...[
             TextButton(
               onPressed: () => context.go(AppRoutes.activity),
-              child: const Text('Open payment history'),
+              child: const Text('Check payment status'),
             ),
           ] else ...[
-            Text('Receiving wallet: ${wallet['address']}'),
+            Text('Receiving wallet: ${wallet!['address']}'),
             const SizedBox(height: 16),
             Form(
               key: _formKey,
@@ -305,7 +394,29 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             const SizedBox(height: 24),
             ElevatedButton(
               onPressed: _busy ? null : _redeem,
-              child: const Text('Submit payment'),
+              style: ElevatedButton.styleFrom(
+                disabledBackgroundColor: Theme.of(context).colorScheme.primary,
+                disabledForegroundColor: Theme.of(context)
+                    .colorScheme
+                    .onPrimary,
+              ),
+              child: _busy
+                  ? const Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        ),
+                        SizedBox(width: 12),
+                        Text('Submitting...'),
+                      ],
+                    )
+                  : const Text('Submit payment'),
             ),
           ],
           if (_message != null)

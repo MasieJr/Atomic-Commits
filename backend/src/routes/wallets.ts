@@ -22,6 +22,9 @@ export function createWalletsRouter(wallets: VerifiedWalletService, tokens: Acce
   router.get("/wallet/approvals/:id", requireLogin, perUser, async (req, res) => {
     res.json(await wallets.getApproval(req.userId!, req.params.id));
   });
+  router.get("/merchant", requireLogin, perUser, async (req, res) => {
+    res.json({ merchant: await wallets.getMerchant(req.userId!) });
+  });
   router.post("/merchant", requireLogin, perUser, async (req, res) => {
     res.json(await wallets.setupMerchant(req.userId!, req.body));
   });

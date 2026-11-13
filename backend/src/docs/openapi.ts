@@ -276,9 +276,17 @@ export function buildOpenApiSpec(serverUrl?: string) {
           responses: { 200: { description: "Ownership verified" }, 400: { description: "Callback verification failed" }, 409: { description: "Already handled" } } },
       },
       "/api/merchant": {
+        get: { tags: ["Wallets"], summary: "Get the caller's receiving setup", security: bearer,
+          responses: { 200: json({ type: "object", properties: { merchant: { type: "object", nullable: true, properties: {
+            merchantId: { type: "string", format: "uuid" }, displayName: { type: "string" },
+            walletAddress: { type: "string" }, status: { type: "string" },
+          } } } }), 401: error("Not logged in") } },
         post: { tags: ["Wallets"], summary: "Activate merchant checkout using the caller's verified wallet", security: bearer,
           requestBody: { required: true, content: { "application/json": { schema: {
-            type: "object", required: ["displayName"], properties: { displayName: { type: "string", minLength: 2, maxLength: 80 } },
+            type: "object", required: ["displayName"], properties: {
+              displayName: { type: "string", minLength: 2, maxLength: 80 },
+              createOnly: { type: "boolean", description: "Return an existing setup without changing it." },
+            },
           } } } },
           responses: { 200: json({ type: "object", properties: {
             merchantId: { type: "string", format: "uuid" }, displayName: { type: "string" }, walletAddress: { type: "string" }, status: { type: "string" },

@@ -147,27 +147,51 @@ export function createVerifiedWalletService(options: {
     }
   }
 
+  async function getMerchant(userId: number) {
+    const { rows } = await pool.query(
+      `SELECT id, display_name, receiving_wallet_address, status
+         FROM app_private.merchants WHERE user_id = $1`, [userId],
+    );
+    const row = rows[0];
+    return row ? {
+      merchantId: row.id,
+      displayName: row.display_name,
+      walletAddress: row.receiving_wallet_address,
+      status: row.status,
+    } : null;
+  }
+
   async function setupMerchant(userId: number, body: unknown) {
     const input = typeof body === "object" && body !== null && !Array.isArray(body) ? body as Record<string, unknown> : {};
     const displayName = typeof input.displayName === "string" ? input.displayName.trim() : "";
     if (displayName.length < 2 || displayName.length > 80 || /[\u0000-\u001f\u007f]/.test(displayName)) {
       throw new ApiError(400, "Merchant name must be 2 to 80 printable characters.", "INVALID_REQUEST");
     }
+    if (input.createOnly !== undefined && typeof input.createOnly !== "boolean") {
+      throw new ApiError(400, "createOnly must be a boolean.", "INVALID_REQUEST");
+    }
+    const onConflict = input.createOnly === true
+      ? "DO NOTHING"
+      : `DO UPDATE
+          SET display_name = EXCLUDED.display_name, receiving_wallet_address = EXCLUDED.receiving_wallet_address
+          WHERE merchants.status = 'ACTIVE'`;
     const { rows } = await pool.query(
       `INSERT INTO app_private.merchants (user_id, display_name, receiving_wallet_address)
        SELECT user_id, $2, wallet_address FROM app_private.verified_wallets WHERE user_id = $1
-       ON CONFLICT (user_id) DO UPDATE
-         SET display_name = EXCLUDED.display_name, receiving_wallet_address = EXCLUDED.receiving_wallet_address
-         WHERE merchants.status = 'ACTIVE'
+       ON CONFLICT (user_id) ${onConflict}
        RETURNING id, display_name, receiving_wallet_address, status`,
       [userId, displayName],
     );
+    if (!rows[0] && input.createOnly === true) {
+      const existing = await getMerchant(userId);
+      if (existing) return existing;
+    }
     if (!rows[0]) throw new ApiError(409, "Link a verified wallet and use an active merchant account.", "WALLET_REQUIRED");
     return { merchantId: rows[0].id, displayName: rows[0].display_name,
       walletAddress: rows[0].receiving_wallet_address, status: rows[0].status };
   }
 
-  return { getWallet, start, getApproval, callback, setupMerchant };
+  return { getWallet, start, getApproval, callback, getMerchant, setupMerchant };
 }
 
 export type VerifiedWalletService = ReturnType<typeof createVerifiedWalletService>;

@@ -36,6 +36,7 @@ class _Backend implements HttpClientAdapter {
   final String status;
   int requests = 0;
   Map<String, dynamic>? redemption;
+  Map<String, dynamic>? merchant;
   String? idempotencyKey;
 
   @override
@@ -55,8 +56,18 @@ class _Backend implements HttpClientAdapter {
         },
       };
     } else if (options.path == '/merchant') {
-      expect(options.data, {'displayName': 'User B'});
-      result = {'status': 'ACTIVE'};
+      if (options.method == 'GET') {
+        result = {'merchant': merchant};
+      } else {
+        expect(options.data, {'displayName': 'User B', 'createOnly': true});
+        merchant ??= {
+          'merchantId': 'merchant-b',
+          'displayName': 'User B',
+          'walletAddress': 'https://ilp.interledger-test.dev/b',
+          'status': 'ACTIVE',
+        };
+        result = merchant!;
+      }
     } else if (options.path == '/devices/totp/ABC234/status') {
       result = {
         'status': 'ACTIVE',
@@ -167,8 +178,6 @@ void main() {
     ) async {
       final backend = await setup(status);
       await tester.pumpWidget(const MaterialApp(home: EnterCodeScreen()));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Activate merchant checkout'));
       await tester.pumpAndSettle();
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Purchase amount (USD)'),

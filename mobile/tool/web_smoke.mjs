@@ -28,6 +28,7 @@ let registrations = 0;
 let enrollments = 0;
 let requests = 0;
 let verifiedB = false;
+let merchantB;
 let acceptedCode;
 let debitCount = 0;
 let redemptionAttempts = 0;
@@ -75,8 +76,14 @@ async function mockApi(page) {
         algorithm: 'SHA1', digits: 6, periodSeconds: 30, expiresAtEpochMs: Date.now() + 3_600_000, revoked: false };
     } else if (endpoint === '/merchant') {
       assert.equal(request.headers().authorization, 'Bearer mock-b');
-      assert.deepEqual(request.postDataJSON(), { displayName: 'Mock User B' });
-      result = { merchantId: 'merchant-b', status: 'ACTIVE' };
+      if (request.method() === 'GET') {
+        result = { merchant: merchantB ?? null };
+      } else {
+        assert.deepEqual(request.postDataJSON(), { displayName: 'Mock User B', createOnly: true });
+        merchantB ??= { merchantId: 'merchant-b', displayName: 'Mock User B',
+          walletAddress: 'https://ilp.interledger-test.dev/b', status: 'ACTIVE' };
+        result = merchantB;
+      }
     } else if (endpoint === '/offline-redemptions') {
       assert.equal(request.headers().authorization, 'Bearer mock-b');
       const body = request.postDataJSON();
@@ -168,10 +175,6 @@ try {
   await signup.mouse.click(54, 880);
   await signup.waitForTimeout(1_000);
   await signup.mouse.click(320, 435);
-  await signup.waitForTimeout(1_000);
-  await signup.mouse.click(200, 255);
-  await signup.waitForTimeout(2_000);
-  await signup.mouse.click(200, 218);
   await signup.waitForTimeout(2_000);
   await signup.mouse.click(120, 135);
   await signup.keyboard.type('12.34');
