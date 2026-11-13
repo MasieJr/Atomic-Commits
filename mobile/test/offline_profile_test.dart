@@ -24,6 +24,30 @@ void main() {
     },
   );
 
+  test('long 30-minute codes rotate on 1800s steps and expire at step end', () {
+    OfflineCode longAt(int ms) => profile.codeAt(
+          DateTime.fromMillisecondsSinceEpoch(ms, isUtc: true),
+          periodMs: 1800000,
+        );
+    // Stable across the whole first long bucket after step 0.
+    expect(longAt(0).value, longAt(900000).value);
+    expect(longAt(0).value, longAt(1799999).value);
+    expect(longAt(0).expiresAt.millisecondsSinceEpoch, 1800000);
+    // Rotates at the long boundary.
+    expect(longAt(1800000).value, isNot(longAt(0).value));
+    expect(longAt(1800000).expiresAt.millisecondsSinceEpoch, 3600000);
+    // Same instant, default 30s period → different step/code than long step 0
+    // only when counters diverge (t > 0 short step differs from long step 0).
+    expect(
+      profile.codeAt(DateTime.fromMillisecondsSinceEpoch(60000, isUtc: true)).value,
+      isNot(longAt(0).value),
+    );
+    expect(
+      () => profile.codeAt(DateTime.fromMillisecondsSinceEpoch(0), periodMs: 0),
+      throwsArgumentError,
+    );
+  });
+
   test('secure device profiles are scoped to the signed-in user', () async {
     FlutterSecureStorage.setMockInitialValues({});
     const store = OfflineProfileStore();

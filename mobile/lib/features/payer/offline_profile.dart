@@ -62,16 +62,19 @@ class OfflineProfile {
     if (permissionLimit != null) 'permissionLimit': permissionLimit,
   };
 
-  OfflineCode codeAt(DateTime time) {
+  OfflineCode codeAt(DateTime time, {int periodMs = 30000}) {
+    if (periodMs <= 0) {
+      throw ArgumentError.value(periodMs, 'periodMs', 'must be positive');
+    }
     final milliseconds = time.toUtc().millisecondsSinceEpoch;
     if (milliseconds < 0 || milliseconds >= expiresAtEpochMs) {
       throw StateError(
         'This offline profile has expired. Connect to enroll again.',
       );
     }
-    final step = milliseconds ~/ 30000;
+    final step = milliseconds ~/ periodMs;
     final digits = decimalTotp(secret, step);
-    final stepEnd = (step + 1) * 30000;
+    final stepEnd = (step + 1) * periodMs;
     final expiry = stepEnd < expiresAtEpochMs ? stepEnd : expiresAtEpochMs;
     return OfflineCode(
       '$prefix-$digits',

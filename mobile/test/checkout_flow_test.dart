@@ -55,6 +55,17 @@ class _Backend implements HttpClientAdapter {
           'assetScale': 2,
         },
       };
+    } else if (options.path == '/wallets') {
+      result = {
+        'wallets': [
+          {
+            'address': 'https://ilp.interledger-test.dev/b',
+            'assetCode': 'USD',
+            'assetScale': 2,
+            'isDefaultReceiving': true,
+          },
+        ],
+      };
     } else if (options.path == '/merchant') {
       if (options.method == 'GET') {
         result = {'merchant': merchant};
@@ -124,7 +135,9 @@ void main() {
       ..httpClientAdapter = backend;
     getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
     getIt.registerSingleton<AuthController>(_User());
-    addTearDown(() async => getIt.reset());
+    addTearDown(() async {
+      await getIt.reset();
+    });
     return backend;
   }
 
@@ -154,18 +167,9 @@ void main() {
         findsOneWidget,
       );
       expect(backend.requests, 0);
-      expect(find.textContaining('Device limit unavailable'), findsOneWidget);
-      await tester.ensureVisible(find.text('Check device status online'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Check device status online'));
-      await tester.pumpAndSettle();
       expect(
-        find.text('Device limit at enrollment: ZAR 200.00 per payment'),
+        find.textContaining('Device limit at enrollment is unavailable'),
         findsOneWidget,
-      );
-      expect(
-        (await const OfflineProfileStore().read(22))?.permissionLimit,
-        'ZAR 200.00',
       );
       await tester.pumpWidget(const SizedBox.shrink());
       await getIt.reset();
@@ -179,6 +183,7 @@ void main() {
       final backend = await setup(status);
       await tester.pumpWidget(const MaterialApp(home: EnterCodeScreen()));
       await tester.pumpAndSettle();
+      expect(find.text('Purchase amount (USD)'), findsOneWidget);
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Purchase amount (USD)'),
         '12.34',

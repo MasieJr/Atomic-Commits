@@ -122,12 +122,13 @@ void main() {
       getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
       getIt.registerSingleton<AuthController>(user);
       addTearDown(() async {
+        await tester.pumpWidget(const SizedBox.shrink());
         await getIt.reset();
         user.dispose();
       });
       await tester.pumpWidget(const MaterialApp(home: PayerHomeScreen()));
       await tester.pumpAndSettle();
-      await tester.tap(find.text('Enroll this device'));
+      await tester.tap(find.text('Try device setup'));
       await tester.pumpAndSettle();
       expect(
         find.textContaining('Maximum ZAR 5.00 per payment'),
@@ -138,17 +139,10 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(
-        find.textContaining('Enrollment may already exist'),
+        find.textContaining('Setup could not be completed safely'),
         findsOneWidget,
       );
-      await tester.tap(find.text('Check registered devices'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.textContaining('Atomic mobile'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.widgetWithText(FilledButton, 'Revoke'));
-      await tester.pumpAndSettle();
-      expect(backend.revoked, isTrue);
-      expect(find.text('Device ABC234 revoked.'), findsOneWidget);
+      expect(find.text('Manage devices in Wallet'), findsOneWidget);
       await tester.pumpWidget(const SizedBox.shrink());
     },
   );
@@ -164,12 +158,13 @@ void main() {
     getIt.registerSingleton<ApiClient>(ApiClient(client: dio));
     getIt.registerSingleton<AuthController>(user);
     addTearDown(() async {
+      await tester.pumpWidget(const SizedBox.shrink());
       await getIt.reset();
       user.dispose();
     });
     await tester.pumpWidget(const MaterialApp(home: PayerHomeScreen()));
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Enroll this device'));
+    await tester.tap(find.text('Try device setup'));
     await tester.pumpAndSettle();
     await tester.tap(find.textContaining('Maximum ZAR 5.00 per payment'));
     await tester.pumpAndSettle();

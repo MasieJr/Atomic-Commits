@@ -10,6 +10,8 @@ import 'package:atomic_commits/features/auth/data/auth_api.dart';
 import 'package:atomic_commits/features/auth/data/auth_repository.dart';
 import 'package:atomic_commits/features/auth/models/user_model.dart';
 import 'package:atomic_commits/features/merchant/screens/enter_code_screen.dart';
+import 'package:atomic_commits/features/payer/offline_profile.dart';
+import 'package:atomic_commits/features/payer/screens/payer_home_screen.dart';
 import 'package:atomic_commits/features/wallet/screens/wallet_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -121,6 +123,17 @@ Future<void> _setup(WidgetTester tester) async {
   addTearDown(tester.view.reset);
 }
 
+/// Seed an enrolled offline profile so Pay shows a live code + period toggle.
+Future<void> _seedPayProfile() async {
+  const profile = OfflineProfile(
+    prefix: 'ABC234',
+    secret: 'GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ',
+    expiresAtEpochMs: 4102444800000,
+    permissionLimit: 'ZAR 200.00',
+  );
+  await const OfflineProfileStore().save(1, profile);
+}
+
 Future<void> _capture(String name) async {
   await expectLater(
     find.byType(MaterialApp),
@@ -167,6 +180,31 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.byType(TextField), findsOneWidget);
     await _capture('wallet-connect-field');
+    await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('chrome — pay screen with 30s/30m toggle', (tester) async {
+    await _setup(tester);
+    await _seedPayProfile();
+    // Fixed clock so the countdown label is golden-stable.
+    final fixedNow = DateTime.utc(2026, 11, 13, 12, 0, 5);
+    await tester.pumpWidget(
+      MaterialApp(
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light,
+        home: PayerHomeScreen(now: () => fixedNow),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('30 seconds'), findsOneWidget);
+    expect(find.text('30 minutes'), findsOneWidget);
+    expect(find.textContaining('Current window ends in'), findsOneWidget);
+    await _capture('pay-30s-toggle');
+    await tester.tap(find.text('30 minutes'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Valid until'), findsOneWidget);
+    expect(find.textContaining(r' left'), findsOneWidget);
+    await _capture('pay-30m-toggle');
     await tester.pumpWidget(const SizedBox.shrink());
   });
 }

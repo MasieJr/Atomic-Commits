@@ -437,9 +437,24 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                   ),
                   const SizedBox(height: 6),
                   SelectableText('${wallet['address']}'),
-                  TextButton(
-                    onPressed: () => context.go(AppRoutes.wallet),
-                    child: const Text('Change receiving wallet'),
+                  const SizedBox(height: 2),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => context.go(AppRoutes.wallet),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColours.cobalt,
+                        padding: EdgeInsets.zero,
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      child: const Text('Change receiving wallet'),
+                    ),
                   ),
                 ],
               ),

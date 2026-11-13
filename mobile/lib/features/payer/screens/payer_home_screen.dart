@@ -14,7 +14,10 @@ import 'package:go_router/go_router.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 class PayerHomeScreen extends StatefulWidget {
-  const PayerHomeScreen({super.key});
+  const PayerHomeScreen({super.key, this.now});
+
+  /// Injectable clock for deterministic widget tests and screenshots.
+  final DateTime Function()? now;
 
   @override
   State<PayerHomeScreen> createState() => _PayerHomeScreenState();
@@ -29,10 +32,12 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
   bool _setupBlocked = true;
   bool _showWallet = false;
   bool _ownerChanged = false;
+  bool _longCode = false;
   String? _message;
   late final int _userId;
 
   Dio get _api => getIt<ApiClient>().dio;
+  DateTime _now() => widget.now?.call() ?? DateTime.now();
   bool get _current =>
       mounted && !_ownerChanged && getIt<AuthController>().user?.id == _userId;
 
@@ -271,14 +276,23 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
     OfflineCode? code;
     if (_profile != null) {
       try {
-        code = _profile!.codeAt(DateTime.now());
+        code = _profile!.codeAt(
+          _now(),
+          periodMs: _longCode ? 1800000 : 30000,
+        );
       } on StateError {
         /* displayed below */
       }
     }
     final seconds = code == null
         ? 0
-        : code.expiresAt.difference(DateTime.now().toUtc()).inSeconds + 1;
+        : code.expiresAt.difference(_now().toUtc()).inSeconds + 1;
+    final minutes = seconds ~/ 60;
+    final remainder = seconds % 60;
+    final countdown = '$minutes:${remainder.toString().padLeft(2, '0')}';
+    final windowLabel = _longCode
+        ? 'Valid until ${code?.expiresAt.toLocal().toIso8601String().substring(11, 16) ?? '--:--'} · $countdown left'
+        : 'Current window ends in ${seconds.clamp(0, 30)} seconds';
     final cardDecoration = BoxDecoration(
       color: AppColours.fieldFill,
       borderRadius: BorderRadius.circular(20),
@@ -378,6 +392,17 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
               child: const Text('Manage devices in Wallet'),
             ),
           ] else ...[
+            SegmentedButton<bool>(
+              segments: const [
+                ButtonSegment(value: false, label: Text('30 seconds')),
+                ButtonSegment(value: true, label: Text('30 minutes')),
+              ],
+              selected: {_longCode},
+              onSelectionChanged: (selection) {
+                setState(() => _longCode = selection.first);
+              },
+            ),
+            const SizedBox(height: 12),
             Container(
               padding: const EdgeInsets.all(20),
               decoration: cardDecoration,
@@ -417,7 +442,7 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
                       borderRadius: BorderRadius.circular(30),
                     ),
                     child: Text(
-                      'Current window ends in ${seconds.clamp(0, 30)} seconds',
+                      windowLabel,
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: AppColours.eyebrow,
