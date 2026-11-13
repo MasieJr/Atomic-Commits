@@ -16,6 +16,11 @@ class AuthRepository {
     required this._apiClient,
   });
 
+  Future<void> saveGoogleSession(UserModel user, String token) async {
+    await _tokenStorage.saveSession(token, user.toJson());
+    _apiClient.setAuthToken(token);
+  }
+
   Future<UserModel> login({
     required String email,
     required String password,
@@ -24,7 +29,10 @@ class AuthRepository {
 
     final authResponse = AuthResponse.fromJson(response);
 
-    await _tokenStorage.saveSession(authResponse.token, authResponse.user.toJson());
+    await _tokenStorage.saveSession(
+      authResponse.token,
+      authResponse.user.toJson(),
+    );
     _apiClient.setAuthToken(authResponse.token);
 
     return authResponse.user;
@@ -43,7 +51,10 @@ class AuthRepository {
 
     final authResponse = AuthResponse.fromJson(response);
 
-    await _tokenStorage.saveSession(authResponse.token, authResponse.user.toJson());
+    await _tokenStorage.saveSession(
+      authResponse.token,
+      authResponse.user.toJson(),
+    );
     _apiClient.setAuthToken(authResponse.token);
 
     return authResponse.user;

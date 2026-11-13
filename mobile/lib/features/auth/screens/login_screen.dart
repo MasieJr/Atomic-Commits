@@ -1,6 +1,7 @@
 import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:atomic_commits/core/utils.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
@@ -10,6 +11,7 @@ import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/auth/widgets/google_sign_in_button.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -191,6 +193,18 @@ class _LoginScreenState extends State<LoginScreen> {
                                 const Art(),
                                 const SizedBox(height: 16),
                                 Header(width: width),
+                                const SizedBox(height: 16),
+                                GoogleSignInButton(
+                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl)
+                                      .replace(path: ''),
+                                  enabled: !_isLoading,
+                                  onComplete: (user, token) async {
+                                    await getIt<AuthController>()
+                                        .completeGoogleSignIn(user, token);
+                                    if (!context.mounted) return;
+                                    context.go(AppRoutes.home);
+                                  },
+                                ),
                                 const SizedBox(height: 16),
 
                                 CustomTextField(

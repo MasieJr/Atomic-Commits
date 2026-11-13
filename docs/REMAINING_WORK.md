@@ -20,10 +20,10 @@ debit merely to complete a release.
 
 ## Google sign-in and verified email
 
-- Complete the existing Google OAuth work with provider configuration, a
-  verified browser redirect, PKCE, state, nonce, and server-side token checks.
-  Place Google sign-in on the existing login and signup screens. Link an
-  existing password account only after explicit proof of ownership.
+- Google sign-in is implemented behind a disabled-by-default flag. It uses the
+  existing login and signup screens, server-side token verification, PKCE,
+  state, nonce, and explicit password proof before linking an existing account.
+  Configure the provider and verify the browser redirect before enabling it.
 - Apply the Google identity schema independently of the unfinished multi-wallet
   migration. The current migrator applies all pending SQL files, so do not use
   it against the live database until the pending migration order is safe.

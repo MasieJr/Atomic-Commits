@@ -19,8 +19,11 @@ class TokenStorage {
   final FlutterSecureStorage _storage = const FlutterSecureStorage();
 
   Future<void> saveSession(String token, Map<String, dynamic> user) async {
-    await _storage.write(key: _sessionKey, value: jsonEncode({'token': token, 'user': user}));
     await _storage.delete(key: _tokenKey);
+    await _storage.write(
+      key: _sessionKey,
+      value: jsonEncode({'token': token, 'user': user}),
+    );
   }
 
   Future<StoredSession?> getSession() async {

@@ -7,9 +7,12 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be a valid TCP port');
 }
 
-const { app, authConfigured, close, reconcilePayments, reconcileRevocations } = createApp({
+const { app, authConfigured, close, reconcilePayments, reconcileRevocations, pruneGoogleAttempts } = createApp({
   databaseUrl: process.env.DATABASE_URL,
   jwtSecret: process.env.JWT_SECRET,
+  googleClientId: process.env.GOOGLE_CLIENT_ID,
+  googleClientSecret: process.env.GOOGLE_CLIENT_SECRET,
+  googleAuthEnabled: process.env.GOOGLE_AUTH_ENABLED === '1',
   dataEncryptionKey: process.env.DATA_ENCRYPTION_KEY,
   dataEncryptionKeyVersion: process.env.DATA_ENCRYPTION_KEY_VERSION,
   dataEncryptionKeyV1: process.env.DATA_ENCRYPTION_KEY_V1,
@@ -47,8 +50,19 @@ if (require.main === module) {
   const reconcileTimer = setInterval(reconcile, 60_000);
   reconcileTimer.unref();
 
+  let pruning = false;
+  const pruneTimer = setInterval(() => {
+    if (pruning) return;
+    pruning = true;
+    void Promise.resolve().then(() => pruneGoogleAttempts())
+      .catch(() => console.error('Google sign-in cleanup failed; will retry.'))
+      .finally(() => { pruning = false; });
+  }, 60_000);
+  pruneTimer.unref();
+
   const shutdown = () => {
     clearInterval(reconcileTimer);
+    clearInterval(pruneTimer);
     server.close(() => {
       void close().catch(() => { process.exitCode = 1; });
     });
