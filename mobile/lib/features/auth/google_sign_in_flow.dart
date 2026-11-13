@@ -52,7 +52,12 @@ class GoogleSignInFlow extends ChangeNotifier {
     unawaited(_checkAvailability());
   }
 
-  final Future<void> Function(UserModel user, String token) onComplete;
+  final Future<void> Function(
+    UserModel user,
+    String token,
+    String? refreshToken,
+  )
+  onComplete;
   final Dio _dio;
   bool available = false;
   bool checkingAvailability = true;
@@ -399,7 +404,7 @@ class GoogleSignInFlow extends ChangeNotifier {
         _clear();
         _update(GoogleSignInPhase.finishing, 'Finishing sign-in...');
         try {
-          await onComplete(parsed, token);
+          await onComplete(parsed, token, data['refreshToken'] as String?);
           _update(GoogleSignInPhase.finished);
         } catch (_) {
           _update(

@@ -21,8 +21,18 @@ class TokenStorage {
     deleteLegacy: () => _storage.delete(key: _tokenKey),
   );
 
-  Future<void> saveSession(String token, Map<String, dynamic> user) =>
-      _store.saveSession(token, user);
+  Future<void> saveSession(
+    String token,
+    Map<String, dynamic> user, {
+    String? refreshToken,
+  }) => _store.saveSession(token, user, refreshToken: refreshToken);
+
+  Future<bool> rotateSession(
+    String oldToken,
+    String token,
+    String refreshToken,
+    bool Function() isCurrent,
+  ) => _store.rotateSession(oldToken, token, refreshToken, isCurrent);
 
   Future<StoredSession?> getSession() => _store.getSession();
 

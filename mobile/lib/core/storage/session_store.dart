@@ -1,9 +1,15 @@
 import 'dart:convert';
 
 class StoredSession {
-  const StoredSession({required this.token, this.user, this.activity});
+  const StoredSession({
+    required this.token,
+    this.refreshToken,
+    this.user,
+    this.activity,
+  });
 
   final String token;
+  final String? refreshToken;
   final Map<String, dynamic>? user;
   final Map<String, dynamic>? activity;
 }
@@ -38,6 +44,7 @@ class SessionStore {
     final activity = value['activity'];
     return StoredSession(
       token: value['token'] as String,
+      refreshToken: value['refreshToken'] as String?,
       user: Map<String, dynamic>.from(value['user'] as Map),
       activity: activity is Map ? Map<String, dynamic>.from(activity) : null,
     );
@@ -45,33 +52,38 @@ class SessionStore {
 
   String _encode(StoredSession session) => jsonEncode({
     'token': session.token,
+    if (session.refreshToken != null) 'refreshToken': session.refreshToken,
     'user': session.user,
     if (session.activity != null) 'activity': session.activity,
   });
 
   Future<StoredSession?> getSession() => _serialize(_readSession);
 
-  Future<void> saveSession(String token, Map<String, dynamic> user) =>
-      _serialize(() async {
-        StoredSession? previous;
-        try {
-          previous = await _readSession();
-        } catch (_) {
-          previous = null;
-        }
-        await deleteLegacy();
-        final sameSession =
-            previous?.token == token && previous?.user?['id'] == user['id'];
-        await write(
-          _encode(
-            StoredSession(
-              token: token,
-              user: user,
-              activity: sameSession ? previous?.activity : null,
-            ),
-          ),
-        );
-      });
+  Future<void> saveSession(
+    String token,
+    Map<String, dynamic> user, {
+    String? refreshToken,
+  }) => _serialize(() async {
+    StoredSession? previous;
+    try {
+      previous = await _readSession();
+    } catch (_) {
+      previous = null;
+    }
+    await deleteLegacy();
+    final sameSession =
+        previous?.token == token && previous?.user?['id'] == user['id'];
+    await write(
+      _encode(
+        StoredSession(
+          token: token,
+          refreshToken: refreshToken,
+          user: user,
+          activity: sameSession ? previous?.activity : null,
+        ),
+      ),
+    );
+  });
 
   Future<void> setActivity({
     required String token,
@@ -88,9 +100,36 @@ class SessionStore {
     }
     await write(
       _encode(
-        StoredSession(token: token, user: session!.user, activity: activity),
+        StoredSession(
+          token: token,
+          refreshToken: session!.refreshToken,
+          user: session.user,
+          activity: activity,
+        ),
       ),
     );
+  });
+
+  Future<bool> rotateSession(
+    String oldToken,
+    String token,
+    String refreshToken,
+    bool Function() isCurrent,
+  ) => _serialize(() async {
+    if (!isCurrent()) return false;
+    final session = await _readSession();
+    if (!isCurrent() || session?.token != oldToken) return false;
+    await write(
+      _encode(
+        StoredSession(
+          token: token,
+          refreshToken: refreshToken,
+          user: session!.user,
+          activity: session.activity,
+        ),
+      ),
+    );
+    return isCurrent();
   });
 
   Future<void> deleteSession() => _serialize(() async {
