@@ -273,20 +273,21 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
   @override
   Widget build(BuildContext context) {
     if (!_current) return const Scaffold(backgroundColor: AppColours.paperTop);
+    final now = _now();
     OfflineCode? code;
     if (_profile != null) {
       try {
-        code = _profile!.codeAt(
-          _now(),
-          periodMs: _longCode ? 1800000 : 30000,
-        );
+        code = _profile!.codeAt(now, periodMs: _longCode ? 1800000 : 30000);
       } on StateError {
         /* displayed below */
       }
     }
     final seconds = code == null
         ? 0
-        : code.expiresAt.difference(_now().toUtc()).inSeconds + 1;
+        : (code.expiresAt.difference(now).inMicroseconds +
+                  Duration.microsecondsPerSecond -
+                  1) ~/
+              Duration.microsecondsPerSecond;
     final minutes = seconds ~/ 60;
     final remainder = seconds % 60;
     final countdown = '$minutes:${remainder.toString().padLeft(2, '0')}';

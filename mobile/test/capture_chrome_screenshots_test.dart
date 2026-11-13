@@ -198,13 +198,49 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('30 seconds'), findsOneWidget);
     expect(find.text('30 minutes'), findsOneWidget);
-    expect(find.textContaining('Current window ends in'), findsOneWidget);
+    expect(find.text('Current window ends in 25 seconds'), findsOneWidget);
     await _capture('pay-30s-toggle');
     await tester.tap(find.text('30 minutes'));
     await tester.pumpAndSettle();
     expect(find.textContaining('Valid until'), findsOneWidget);
-    expect(find.textContaining(r' left'), findsOneWidget);
+    expect(find.textContaining('29:55 left'), findsOneWidget);
     await _capture('pay-30m-toggle');
     await tester.pumpWidget(const SizedBox.shrink());
+  });
+
+  testWidgets('pay countdown rounds up and rotates with one clock reading', (
+    tester,
+  ) async {
+    await _setup(tester);
+    await _seedPayProfile();
+    var now = DateTime.utc(2026, 11, 13, 12, 0, 29, 999, 999);
+    var reads = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: PayerHomeScreen(
+          now: () {
+            reads++;
+            return now;
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('Current window ends in 1 seconds'), findsOneWidget);
+    now = DateTime.utc(2026, 11, 13, 12, 0, 30);
+    reads = 0;
+    await tester.pump(const Duration(seconds: 1));
+    expect(reads, 1);
+    expect(find.text('Current window ends in 30 seconds'), findsOneWidget);
+    await tester.tap(find.text('30 minutes'));
+    await tester.pumpAndSettle();
+    now = DateTime.utc(2026, 11, 13, 12, 29, 59, 999, 999);
+    await tester.pump(const Duration(seconds: 1));
+    expect(find.textContaining('0:01 left'), findsOneWidget);
+    now = DateTime.utc(2026, 11, 13, 12, 30);
+    reads = 0;
+    await tester.pump(const Duration(seconds: 1));
+    expect(reads, 1);
+    expect(find.textContaining('30:00 left'), findsOneWidget);
   });
 }
