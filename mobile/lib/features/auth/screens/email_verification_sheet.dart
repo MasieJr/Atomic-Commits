@@ -63,8 +63,11 @@ class _EmailVerificationSheetState extends State<EmailVerificationSheet> {
       );
       if (mounted) {
         setState(() => _busy = false);
+        final sheetRoute = ModalRoute.of(context);
         WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) Navigator.of(context).pop(true);
+          if (mounted && sheetRoute?.isCurrent == true) {
+            sheetRoute?.navigator?.pop(true);
+          }
         });
       }
     } on DioException catch (error) {
