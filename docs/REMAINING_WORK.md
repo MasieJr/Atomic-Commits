@@ -27,9 +27,10 @@ debit merely to complete a release.
 - Apply the Google identity schema independently of the unfinished multi-wallet
   migration. The current migrator applies all pending SQL files, so do not use
   it against the live database until the pending migration order is safe.
-- Configure the Supabase email template and delivery service, then release the
-  signup client and email-verification backend together. Missing configuration
-  must not unexpectedly disable the currently deployed signup flow.
+- The email-code signup flow is implemented behind a disabled-by-default flag.
+  Configure the Supabase email template and delivery service, then verify the
+  provider response and delivery before enabling it. Missing configuration must
+  not unexpectedly disable the currently deployed signup flow.
 - Check sign-in, linking, verification, cancellation, and account isolation using
   the configured providers. Do not put provider credentials in the app bundle.
 

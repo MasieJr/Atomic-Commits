@@ -11,6 +11,8 @@ import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/auth/data/auth_api.dart';
+import 'package:atomic_commits/features/auth/screens/email_verification_sheet.dart';
 import 'package:atomic_commits/features/auth/widgets/google_sign_in_button.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
@@ -115,11 +117,46 @@ class _SignupScreenState extends State<SignupScreen> {
     setState(() => _isLoading = true);
 
     try {
-      await getIt<AuthController>().register(
-        name: _nameController.text.trim(),
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-      );
+      final name = _nameController.text.trim();
+      final email = _emailController.text.trim();
+      final password = _passwordController.text;
+      final auth = getIt<AuthController>();
+      final verification = await auth.emailVerificationState();
+      if (!mounted) return;
+      if (verification == EmailVerificationState.unavailable) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Email verification is temporarily unavailable. Please try again.',
+            ),
+          ),
+        );
+        return;
+      }
+      if (verification == EmailVerificationState.required) {
+        await auth.sendEmailCode(email);
+        if (!mounted) return;
+        final verified = await showModalBottomSheet<bool>(
+          context: context,
+          isScrollControlled: true,
+          isDismissible: false,
+          enableDrag: false,
+          backgroundColor: Colors.transparent,
+          builder: (_) => EmailVerificationSheet(
+            name: name,
+            email: email,
+            password: password,
+          ),
+        );
+        if (!mounted) return;
+        if (verified != true) {
+          setState(() => _isLoading = false);
+          return;
+        }
+      } else {
+        await auth.register(name: name, email: email, password: password);
+      }
 
       if (!mounted) return;
 
@@ -310,11 +347,16 @@ class _SignupScreenState extends State<SignupScreen> {
                                   validator: _validateConfirm,
                                 ),
                                 const SizedBox(height: 18),
-                                SubmitButton(
-                                  width: width,
-                                  submit: _submit,
-                                  label: "Create an account",
-                                ),
+                                if (_isLoading)
+                                  const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
+                                else
+                                  SubmitButton(
+                                    width: width,
+                                    submit: _submit,
+                                    label: "Create an account",
+                                  ),
                                 const SizedBox(height: 14),
                                 Secondary(
                                   width: width,

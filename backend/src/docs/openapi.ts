@@ -197,6 +197,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
                     name: { type: "string", minLength: 2, maxLength: 80 },
                     email: { type: "string", format: "email" },
                     password: { type: "string", minLength: 8, description: "8+ characters, at most 72 bytes" },
+                    emailCode: { type: "string", pattern: "^[0-9]{6,10}$", description: "Required when email verification is enabled" },
                   },
                 },
               },
@@ -205,9 +206,84 @@ export function buildOpenApiSpec(serverUrl?: string) {
           responses: {
             201: json({ $ref: "#/components/schemas/AuthResponse" }, "Created"),
             400: error("Invalid input"),
-            409: error("Email already registered"),
+            409: error("Email already registered or signup settings changed"),
             429: error("Too many attempts (5 per 15 minutes)"),
+            503: error("Email verification is required but unavailable"),
           },
+        },
+      },
+      "/api/auth/email-verification/status": {
+        get: {
+          tags: ["Auth"], summary: "Get the signup email verification policy",
+          description: "Availability reflects backend configuration, not verified email delivery.",
+          responses: { 200: json({ type: "object", required: ["required", "available"], properties: {
+            required: { type: "boolean" }, available: { type: "boolean" },
+          } }) },
+        },
+      },
+      "/api/auth/email-code": {
+        post: {
+          tags: ["Auth"], summary: "Send an email verification code",
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["email"], properties: { email: { type: "string", format: "email", maxLength: 254 } },
+          } } } },
+          responses: { 202: json({ type: "object", properties: { message: { type: "string" } } }, "Code requested"),
+            400: error("Invalid email address"), 429: error("Too many requests"), 503: error("Email verification unavailable") },
+        },
+      },
+      "/api/auth/google/status": {
+        get: { tags: ["Auth"], summary: "Check Google sign-in availability", responses: {
+          200: json({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }),
+        } },
+      },
+      "/api/auth/google/attempts": {
+        post: { tags: ["Auth"], summary: "Start Google sign-in", description: "Open the returned URL in an external browser. Keep the poll secret private.", responses: {
+          201: json({ type: "object", required: ["attemptId", "pollSecret", "authorizationUrl", "expiresAt", "expiresInMs", "pollIntervalMs"], properties: {
+            attemptId: { type: "string", format: "uuid" }, pollSecret: { type: "string" }, authorizationUrl: { type: "string", format: "uri" },
+            expiresAt: { type: "string", format: "date-time" }, expiresInMs: { type: "integer" }, pollIntervalMs: { type: "integer" },
+          } }, "Attempt created"), 429: error("Too many requests"), 503: error("Google sign-in unavailable"),
+        } },
+      },
+      "/api/auth/google/attempts/{attemptId}/consume": {
+        post: { tags: ["Auth"], summary: "Poll a Google sign-in attempt", parameters: [uuidParam("attemptId", "Attempt ID")],
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string" } },
+          } } } },
+          responses: { 200: json({ type: "object", properties: {
+            status: { type: "string", enum: ["complete", "link_required", "cancelled", "expired", "consumed", "failed"] },
+            user: { $ref: "#/components/schemas/User" }, token: { type: "string" },
+            attemptsRemaining: { type: "integer" }, expiresAt: { type: "string", format: "date-time" },
+            expiresInMs: { type: "integer" }, code: { type: "string" },
+          } }),
+            202: json({ type: "object", properties: { status: { type: "string", enum: ["pending"] }, pollIntervalMs: { type: "integer" } } }, "Pending"),
+            400: error("Invalid attempt proof"), 404: error("Attempt unavailable"),
+            429: json({ type: "object" }, "Too many requests"), 503: error("Google sign-in unavailable") },
+        },
+      },
+      "/api/auth/google/attempts/{attemptId}/link": {
+        post: { tags: ["Auth"], summary: "Connect Google using the existing account password", parameters: [uuidParam("attemptId", "Attempt ID")],
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["pollSecret", "password", "confirmLink"], properties: {
+              pollSecret: { type: "string" }, password: { type: "string" }, confirmLink: { type: "boolean", enum: [true] },
+            },
+          } } } },
+          responses: { 200: json({ type: "object", properties: { status: { type: "string", enum: ["ready"] } } }),
+            400: error("Invalid input"),
+            401: json({ type: "object", required: ["status", "attemptsRemaining"], properties: {
+              status: { type: "string", enum: ["invalid_password"] }, attemptsRemaining: { type: "integer" },
+            } }, "Password rejected"),
+            404: error("Attempt unavailable"), 409: json({ type: "object" }, "Link failed"),
+            410: json({ type: "object" }, "Attempt ended"),
+            429: json({ type: "object" }, "Too many requests"), 503: error("Google sign-in unavailable") },
+        },
+      },
+      "/api/auth/google/attempts/{attemptId}/cancel": {
+        post: { tags: ["Auth"], summary: "Cancel a Google sign-in attempt", parameters: [uuidParam("attemptId", "Attempt ID")],
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string" } },
+          } } } },
+          responses: { 200: json({ type: "object", properties: { status: { type: "string" } } }),
+            400: error("Invalid attempt proof"), 404: error("Attempt unavailable"), 429: error("Too many requests"), 503: error("Google sign-in unavailable") },
         },
       },
       "/api/auth/login": {

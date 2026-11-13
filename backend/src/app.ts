@@ -17,6 +17,7 @@ import { createPaymentsRouter } from "./routes/payments";
 import { createTotpDevicesRouter } from "./routes/totp-devices";
 import { createWalletsRouter } from "./routes/wallets";
 import { createDataEncryption, parseDataEncryptionKeyring, type DataEncryption } from "./services/data-encryption";
+import { createSupabaseEmailVerification, type EmailVerificationPolicy } from "./services/email-verification";
 import { createGrantAuthorityStore } from "./services/grant-authority-store";
 import { createGoogleOAuthService, googleOAuthPath, type GoogleOAuthService } from "./services/google-oauth";
 import { createOfflineRedemptionService, type OfflineRedemptionService } from "./services/offline-redemption";
@@ -37,6 +38,9 @@ interface AppOptions {
   googleClientId?: string;
   googleClientSecret?: string;
   googleAuthEnabled?: boolean;
+  emailVerificationRequired?: boolean;
+  supabaseUrl?: string;
+  supabasePublishableKey?: string;
   /* base64 of 32 random bytes; separate from jwtSecret */
   dataEncryptionKey?: string;
   dataEncryptionKeyVersion?: string;
@@ -189,7 +193,19 @@ export function createApp(options: AppOptions = {}) {
 
   if (pool && tokens) {
     const users = createUserRepository(pool);
-    const controller = createAuthController(users, tokens);
+    let emailPolicy: EmailVerificationPolicy = { kind: "disabled" };
+    if (options.emailVerificationRequired) {
+      let verifier;
+      try {
+        if (options.supabaseUrl && options.supabasePublishableKey) {
+          verifier = createSupabaseEmailVerification(options.supabaseUrl, options.supabasePublishableKey);
+        }
+      } catch {
+        verifier = undefined;
+      }
+      emailPolicy = { kind: "required", verifier };
+    }
+    const controller = createAuthController(users, tokens, emailPolicy);
     app.use("/api/auth", createAuthRouter(controller, tokens));
 
     /* device enrollment needs the encryption key on top of auth */

@@ -21,6 +21,11 @@ class AuthRepository {
     _apiClient.setAuthToken(token);
   }
 
+  Future<EmailVerificationState> emailVerificationState() =>
+      _authApi.emailVerificationState();
+
+  Future<void> sendEmailCode(String email) => _authApi.sendEmailCode(email);
+
   Future<UserModel> login({
     required String email,
     required String password,
@@ -42,11 +47,13 @@ class AuthRepository {
     required String name,
     required String email,
     required String password,
+    String? emailCode,
   }) async {
     final response = await _authApi.register(
       name: name,
       email: email,
       password: password,
+      emailCode: emailCode,
     );
 
     final authResponse = AuthResponse.fromJson(response);

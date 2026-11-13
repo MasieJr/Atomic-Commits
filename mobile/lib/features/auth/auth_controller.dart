@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'data/auth_repository.dart';
+import 'data/auth_api.dart';
 import 'models/user_model.dart';
 
 class AuthController extends ChangeNotifier {
@@ -26,6 +27,11 @@ class AuthController extends ChangeNotifier {
   bool get isInitialized => _isInitialized;
   bool get isAuthenticated => _user != null;
   bool get isNewAccount => _newAccount;
+
+  Future<EmailVerificationState> emailVerificationState() =>
+      _repository.emailVerificationState();
+
+  Future<void> sendEmailCode(String email) => _repository.sendEmailCode(email);
 
   Future<void> initialize() {
     if (_loggingOut) return Future.error(StateError('Logout in progress'));
@@ -97,6 +103,7 @@ class AuthController extends ChangeNotifier {
     required String name,
     required String email,
     required String password,
+    String? emailCode,
   }) async {
     if (_loggingOut || _authenticating || _user != null) {
       throw StateError('Authentication unavailable');
@@ -112,6 +119,7 @@ class AuthController extends ChangeNotifier {
           name: name,
           email: email,
           password: password,
+          emailCode: emailCode,
         );
         if (generation != _generation) throw StateError('Account changed');
         _user = user;
