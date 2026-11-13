@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
-import { parsePaymentCode, verifyAnySupportedTotpPeriod } from "../domain/payment-engine/totp";
+import { MAX_ALLOWED_DRIFT_STEPS, parsePaymentCode, TOTP_LONG_TIME_STEP_MS, TOTP_TIME_STEP_MS, verifyAnySupportedTotpPeriod } from "../domain/payment-engine/totp";
 import { ApiError } from "../errors/api-error";
 import { DataEncryptionError, type DataEncryption } from "./data-encryption";
 import type { GrantAuthorityStore } from "./grant-authority-store";
@@ -88,8 +88,9 @@ export interface OfflineRedemptionOptions {
 
 const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-/** recent-code replay guard window: the same 6 digits on one device are refused for this long */
-const REPLAY_GUARD_MINUTES = 10;
+/** Maximum combined overlapping acceptance interval: a long bucket plus a full short drift window. */
+const SHORT_ACCEPTANCE_WINDOW_MS = TOTP_TIME_STEP_MS * (1 + 2 * MAX_ALLOWED_DRIFT_STEPS);
+const REPLAY_GUARD_SECONDS = (TOTP_LONG_TIME_STEP_MS + SHORT_ACCEPTANCE_WINDOW_MS) / 1000;
 /** rotate the access token when it has less than this left */
 const TOKEN_REFRESH_MARGIN_MS = 30_000;
 /** a SUBMITTING row older than this is treated as UNKNOWN (process died mid-call) */
@@ -98,10 +99,10 @@ const STALE_SUBMITTING_MS = 2 * 60_000;
  * Accept the code's own 30 s window plus one window either side, so a code
  * shown near the end of its window still works while the merchant types it.
  * Safe because every accepted code is claimed once per (device, time step)
- * AND by a keyed digest over a 10-minute window, whatever step it matched.
+ * AND by a keyed digest over the maximum accepted long-period window, whatever step it matched.
  * Set TOTP_ALLOWED_DRIFT_STEPS=0 for the strict single-window behaviour.
  */
-const DEFAULT_ALLOWED_DRIFT_STEPS = 1;
+const DEFAULT_ALLOWED_DRIFT_STEPS = MAX_ALLOWED_DRIFT_STEPS;
 /* a ROTATING grant older than this was left by a process that died mid-rotation */
 const STUCK_ROTATION_MS = 2 * 60_000;
 
@@ -633,8 +634,8 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         /* replay guard: same 6 digits on this device recently = refused, whatever the time step */
         const recent = await db.query(
           `SELECT 1 FROM app_private.totp_code_claims
-            WHERE device_id = $1 AND code_digest = ANY($2::bytea[]) AND created_at > now() - make_interval(mins => $3)`,
-          [device.id, codeDigests, REPLAY_GUARD_MINUTES],
+            WHERE device_id = $1 AND code_digest = ANY($2::bytea[]) AND created_at >= now() - make_interval(secs => $3)`,
+          [device.id, codeDigests, REPLAY_GUARD_SECONDS],
         );
         if (recent.rows[0]) throw new ApiError(409, "This payment code was already used.", "CODE_ALREADY_USED");
 

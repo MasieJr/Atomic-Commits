@@ -66,7 +66,7 @@ const CODE_LENGTH = 6;
 /** RFC 6238 recommends seeds of at least 128 bits. */
 const MIN_SECRET_BYTES = 16;
 /** The backend contract allows the current step plus at most one adjacent. */
-const MAX_ALLOWED_DRIFT_STEPS = 1;
+export const MAX_ALLOWED_DRIFT_STEPS = 1;
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /**
