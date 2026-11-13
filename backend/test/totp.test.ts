@@ -236,15 +236,16 @@ test('verifyAnySupportedTotpPeriod dual-tries 30s then 30m without wire metadata
   assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, '000000', 0, 1), { valid: false });
 });
 
-test('age matrix: long code lives +1m..+15m and dies at +31m; short accepts +10s/+45s, dies at +75s', () => {
+test('age matrix: long code lives +1m/+4m/+5m/+10m/+15m and dies at +31m; short accepts +10s/+45s, dies at +75s', () => {
   /* Long code issued on a step boundary (long step 1; base avoids the t=0 collision). */
   const base = TOTP_LONG_TIME_STEP_MS;
   const long = generateApiTotp(RFC_SEED, base, TOTP_LONG_TIME_STEP_MS);
   assert.equal(long.timeStep, 1);
   for (const ageMs of [
     60_000, // +1m
-    120_000, // +2m
-    180_000, // +3m
+    240_000, // +4m
+    300_000, // +5m
+    600_000, // +10m
     900_000, // +15m
   ]) {
     assert.deepEqual(
