@@ -300,12 +300,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: _busy ? null : _activate,
-              style: ElevatedButton.styleFrom(
-                disabledBackgroundColor: Theme.of(context).colorScheme.primary,
-                disabledForegroundColor: Theme.of(context)
-                    .colorScheme
-                    .onPrimary,
-              ),
               child: _busy
                   ? const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -390,11 +384,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                     ),
                     decoration: InputDecoration(
                       labelText: 'Purchase amount (${wallet!['assetCode']})',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
                     ),
                     validator: (value) =>
                         parseMinorAmount(
@@ -415,14 +404,9 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1,
                     ),
-                    decoration: InputDecoration(
+                    decoration: const InputDecoration(
                       labelText: 'Customer payment code',
                       hintText: 'ABC234-123456',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
                     ),
                     validator: (value) =>
                         RegExp(r'^[A-Z0-9]{4,12}-[0-9]{6}$')
@@ -463,16 +447,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _busy ? null : _redeem,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: cobalt,
-                foregroundColor: Colors.white,
-                disabledBackgroundColor: cobalt,
-                disabledForegroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(52),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
               child: _busy
                   ? const Row(
                       mainAxisSize: MainAxisSize.min,

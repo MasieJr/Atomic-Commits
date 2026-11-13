@@ -9,6 +9,6 @@ abstract final class AppSpacing {
   static const double screenPadding = 20;
   static const double cardRadius = 12;
   static const double buttonRadius = 12;
-  static const double inputRadius = 12;
+  static const double inputRadius = 13;
   static const double buttonHeight = 52;
 }
