@@ -195,11 +195,13 @@ class _LoginScreenState extends State<LoginScreen> {
                                 Header(width: width),
                                 const SizedBox(height: 16),
                                 GoogleSignInButton(
-                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl).replace(path: '', query: null, fragment: null),
+                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl)
+                                      .replace(path: ''),
                                   enabled: !_isLoading,
-                                  onComplete: (user, token, refreshToken) async {
-                                    await getIt<AuthController>().completeGoogleSignIn(user, token, refreshToken);
-                                    if (!mounted) return;
+                                  onComplete: (user, token) async {
+                                    await getIt<AuthController>()
+                                        .completeGoogleSignIn(user, token);
+                                    if (!context.mounted) return;
                                     context.go(AppRoutes.home);
                                   },
                                 ),

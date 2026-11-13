@@ -1,6 +1,7 @@
 import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:atomic_commits/core/utils.dart';
 import 'package:atomic_commits/core/widgets/auth/art.dart';
 import 'package:atomic_commits/core/widgets/auth/custom_text_field.dart';
@@ -10,9 +11,9 @@ import 'package:atomic_commits/core/widgets/auth/signup_texture.dart';
 import 'package:atomic_commits/core/widgets/auth/submit_button.dart';
 import 'package:atomic_commits/core/widgets/auth/top_line.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
-import 'package:atomic_commits/features/auth/screens/email_verification_dialog.dart';
+import 'package:atomic_commits/features/auth/data/auth_api.dart';
+import 'package:atomic_commits/features/auth/screens/email_verification_sheet.dart';
 import 'package:atomic_commits/features/auth/widgets/google_sign_in_button.dart';
-import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -119,21 +120,50 @@ class _SignupScreenState extends State<SignupScreen> {
       final name = _nameController.text.trim();
       final email = _emailController.text.trim();
       final password = _passwordController.text;
-      await getIt<AuthController>().sendEmailCode(email);
+      final auth = getIt<AuthController>();
+      final verification = await auth.emailVerificationState();
+      if (!mounted) return;
+      if (verification == EmailVerificationState.unavailable) {
+        setState(() => _isLoading = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Email verification is temporarily unavailable. Please try again.',
+            ),
+          ),
+        );
+        return;
+      }
+      if (verification == EmailVerificationState.required) {
+        await auth.sendEmailCode(email);
+        if (!mounted) return;
+        final verified = await showModalBottomSheet<bool>(
+          context: context,
+          isScrollControlled: true,
+          isDismissible: false,
+          enableDrag: false,
+          backgroundColor: Colors.transparent,
+          builder: (_) => EmailVerificationSheet(
+            name: name,
+            email: email,
+            password: password,
+          ),
+        );
+        if (!mounted) return;
+        if (verified != true) {
+          setState(() => _isLoading = false);
+          return;
+        }
+      } else {
+        await auth.register(name: name, email: email, password: password);
+      }
 
       if (!mounted) return;
-      setState(() => _isLoading = false);
-      final verified = await showDialog<bool>(
-        context: context,
-        barrierDismissible: false,
-        builder: (_) => EmailVerificationDialog(
-          name: name,
-          email: email,
-          password: password,
-        ),
-      );
-      if (!mounted || verified != true) return;
+
       TextInput.finishAutofillContext();
+
+      setState(() => _isLoading = false);
+
       context.go(AppRoutes.wallet);
     } on DioException catch (error) {
       if (!mounted) return;
@@ -141,7 +171,8 @@ class _SignupScreenState extends State<SignupScreen> {
       setState(() => _isLoading = false);
 
       final responseData = error.response?.data;
-      String message = 'Unable to send a verification code. Please try again.';
+      String message =
+          'Unable to create an account. Please try again or log in if you already have an account.';
 
       if (responseData is Map) {
         final backendMessage = responseData['error'];
@@ -225,11 +256,13 @@ class _SignupScreenState extends State<SignupScreen> {
                                 Header(width: width),
                                 const SizedBox(height: 16),
                                 GoogleSignInButton(
-                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl).replace(path: '', query: null, fragment: null),
+                                  apiOrigin: Uri.parse(ApiEndpoints.baseUrl)
+                                      .replace(path: ''),
                                   enabled: !_isLoading,
-                                  onComplete: (user, token, refreshToken) async {
-                                    await getIt<AuthController>().completeGoogleSignIn(user, token, refreshToken);
-                                    if (!mounted) return;
+                                  onComplete: (user, token) async {
+                                    await getIt<AuthController>()
+                                        .completeGoogleSignIn(user, token);
+                                    if (!context.mounted) return;
                                     context.go(AppRoutes.home);
                                   },
                                 ),
@@ -315,7 +348,9 @@ class _SignupScreenState extends State<SignupScreen> {
                                 ),
                                 const SizedBox(height: 18),
                                 if (_isLoading)
-                                  const Center(child: CircularProgressIndicator())
+                                  const Center(
+                                    child: CircularProgressIndicator(),
+                                  )
                                 else
                                   SubmitButton(
                                     width: width,

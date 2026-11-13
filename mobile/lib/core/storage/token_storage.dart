@@ -4,52 +4,39 @@ import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
-class StoredSession {
-  const StoredSession({required this.token, this.refreshToken, this.user});
+import 'session_store.dart';
 
-  final String token;
-  final String? refreshToken;
-  final Map<String, dynamic>? user;
-}
+export 'session_store.dart' show StoredSession;
 
 class TokenStorage {
   static const String _tokenKey = 'auth_token';
   static final String _sessionKey =
       'auth_session_${sha256.convert(utf8.encode(ApiEndpoints.baseUrl))}';
 
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  static const FlutterSecureStorage _storage = FlutterSecureStorage();
+  static final SessionStore _store = SessionStore(
+    read: () => _storage.read(key: _sessionKey),
+    write: (value) => _storage.write(key: _sessionKey, value: value),
+    delete: () => _storage.delete(key: _sessionKey),
+    deleteLegacy: () => _storage.delete(key: _tokenKey),
+  );
 
-  Future<void> saveSession(
-    String token,
-    Map<String, dynamic> user, {
-    String? refreshToken,
-  }) async {
-    await _storage.write(
-      key: _sessionKey,
-      value: jsonEncode({
-        'token': token,
-        'refreshToken': ?refreshToken,
-        'user': user,
-      }),
-    );
-    await _storage.delete(key: _tokenKey);
-  }
+  Future<void> saveSession(String token, Map<String, dynamic> user) =>
+      _store.saveSession(token, user);
 
-  Future<StoredSession?> getSession() async {
-    final stored = await _storage.read(key: _sessionKey);
-    if (stored != null) {
-      final value = jsonDecode(stored) as Map<String, dynamic>;
-      return StoredSession(
-        token: value['token'] as String,
-        refreshToken: value['refreshToken'] as String?,
-        user: Map<String, dynamic>.from(value['user'] as Map),
-      );
-    }
-    return null;
-  }
+  Future<StoredSession?> getSession() => _store.getSession();
 
-  Future<void> deleteSession() async {
-    await _storage.delete(key: _sessionKey);
-    await _storage.delete(key: _tokenKey);
-  }
+  Future<void> setActivity({
+    required String token,
+    required int userId,
+    required Map<String, dynamic>? activity,
+    required bool Function() isCurrent,
+  }) => _store.setActivity(
+    token: token,
+    userId: userId,
+    activity: activity,
+    isCurrent: isCurrent,
+  );
+
+  Future<void> deleteSession() => _store.deleteSession();
 }

@@ -32,9 +32,6 @@ Future<void> configureDependencies() async {
     apiClient,
   );
 
-  apiClient.onRefreshRequest = authRepository.refreshAccessToken;
-  apiClient.onSessionExpired = authController.sessionExpired;
-
   getIt.registerSingleton<ApiClient>(apiClient);
   getIt.registerSingleton<TokenStorage>(tokenStorage);
   getIt.registerSingleton<AuthApi>(authApi);

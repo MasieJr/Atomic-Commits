@@ -1,11 +1,37 @@
 import 'package:atomic_commits/features/auth/models/user_model.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/core/network/api_endpoints.dart';
+import 'package:dio/dio.dart';
+
+enum EmailVerificationState { notRequired, required, unavailable }
 
 class AuthApi {
   final ApiClient _apiClient;
 
   AuthApi(this._apiClient);
+
+  Future<EmailVerificationState> emailVerificationState() async {
+    try {
+      final response = await _apiClient.dio.get(
+        ApiEndpoints.emailVerificationStatus,
+      );
+      final data = response.data;
+      if (data is! Map ||
+          data['required'] is! bool ||
+          data['available'] is! bool) {
+        throw const FormatException('Invalid email verification status');
+      }
+      if (data['available'] == false) return EmailVerificationState.unavailable;
+      return data['required'] == true
+          ? EmailVerificationState.required
+          : EmailVerificationState.notRequired;
+    } on DioException catch (error) {
+      if (error.response?.statusCode == 404) {
+        return EmailVerificationState.notRequired;
+      }
+      rethrow;
+    }
+  }
 
   Future<void> sendEmailCode(String email) async {
     await _apiClient.dio.post(ApiEndpoints.emailCode, data: {'email': email});
@@ -23,27 +49,11 @@ class AuthApi {
     return Map<String, dynamic>.from(response.data);
   }
 
-  Future<Map<String, dynamic>> refresh(String refreshToken) async {
-    final response = await _apiClient.dio.post(
-      ApiEndpoints.refresh,
-      data: {'refreshToken': refreshToken},
-    );
-
-    return Map<String, dynamic>.from(response.data);
-  }
-
-  Future<void> logout(String refreshToken) async {
-    await _apiClient.dio.post(
-      ApiEndpoints.logout,
-      data: {'refreshToken': refreshToken},
-    );
-  }
-
   Future<Map<String, dynamic>> register({
     required String name,
     required String email,
     required String password,
-    required String emailCode,
+    String? emailCode,
   }) async {
     final response = await _apiClient.dio.post(
       ApiEndpoints.register,
@@ -51,7 +61,7 @@ class AuthApi {
         'name': name,
         'email': email,
         'password': password,
-        'emailCode': emailCode,
+        'emailCode': ?emailCode,
       },
     );
 
