@@ -123,11 +123,6 @@ class _ActivityScreenState extends State<ActivityScreen> {
                     ],
                   ),
               const SizedBox(height: 20),
-              TextButton.icon(
-                onPressed: () => setState(_load),
-                icon: const Icon(Icons.refresh),
-                label: const Text('Refresh'),
-              ),
             ],
           ),
         ),

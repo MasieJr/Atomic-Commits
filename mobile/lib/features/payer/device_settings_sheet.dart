@@ -48,11 +48,11 @@ class _DeviceSettingsSheetState extends State<DeviceSettingsSheet> {
     return devices;
   }
 
-  Future<void> _load() async {
+  Future<void> _load({String? guidance}) async {
     if (!_isOwner || _busy) return;
     setState(() {
       _busy = true;
-      _message = null;
+      _message = guidance;
       _devices = null;
     });
     try {
@@ -71,14 +71,19 @@ class _DeviceSettingsSheetState extends State<DeviceSettingsSheet> {
         _devices = devices;
         _profile = profile;
         if (storageError) {
-          _message = 'Could not read this device’s secure profile. Local cleanup may need attention.';
+          _message = [
+            ?guidance,
+            'Could not read this device’s secure profile. Local cleanup may need attention.',
+          ].join(' ');
         }
       });
     } catch (_) {
       if (!mounted || !_isOwner) return;
       setState(
-        () => _message =
-            'Could not load devices. Check your connection and refresh.',
+        () => _message = [
+          ?guidance,
+          'Could not load devices. Check your connection and pull down to try again.',
+        ].join(' '),
       );
     } finally {
       if (mounted) setState(() => _busy = false);
@@ -146,6 +151,7 @@ class _DeviceSettingsSheetState extends State<DeviceSettingsSheet> {
       _busy = true;
       _message = null;
     });
+    String? guidance;
     try {
       final response = await getIt<ApiClient>().dio.post(
         '/devices/totp/$prefix/revoke',
@@ -167,21 +173,17 @@ class _DeviceSettingsSheetState extends State<DeviceSettingsSheet> {
         cleanupFailed = true;
       }
       if (!mounted || !_isOwner) return;
-      setState(() {
-        _devices = null;
-        _profile = null;
-        _message = cleanupFailed
-            ? 'Device $prefix was revoked, but secure local cleanup failed. Refresh devices to retry local removal.'
-            : 'Device $prefix revoked. Refresh to see the latest device list.';
-      });
+      guidance = cleanupFailed
+          ? 'Device $prefix was revoked, but secure local cleanup failed. Use the device list to retry local removal.'
+          : 'Device $prefix revoked.';
     } catch (_) {
       if (!mounted || !_isOwner) return;
-      setState(() {
-        _devices = null;
-        _message = 'Revocation could not be confirmed. It may have succeeded; refresh the device list before taking further action. No local data was cleared.';
-      });
+      guidance = 'Revocation could not be confirmed. It may have succeeded; check the device list before taking further action. No local data was cleared.';
     } finally {
       if (mounted) setState(() => _busy = false);
+    }
+    if (mounted && _isOwner) {
+      await _load(guidance: guidance);
     }
   }
 
@@ -242,135 +244,136 @@ class _DeviceSettingsSheetState extends State<DeviceSettingsSheet> {
       ),
       child: SafeArea(
         top: false,
-        child: ListView(
-          shrinkWrap: true,
-          padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
-          children: [
-            Center(
-              child: Container(
-                width: 42,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColours.fieldBorder,
-                  borderRadius: BorderRadius.circular(4),
+        child: RefreshIndicator(
+          onRefresh: _load,
+          child: ListView(
+            shrinkWrap: true,
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 24),
+            children: [
+              Center(
+                child: Container(
+                  width: 42,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: AppColours.fieldBorder,
+                    borderRadius: BorderRadius.circular(4),
+                  ),
                 ),
               ),
-            ),
-            const SizedBox(height: 24),
-            const Text(
-              'YOUR SECURITY',
-              style: TextStyle(
-                color: AppColours.eyebrow,
-                fontSize: 12,
-                fontWeight: FontWeight.w800,
-                letterSpacing: 1.2,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Devices',
-              style: TextStyle(
-                color: AppColours.ink,
-                fontSize: 28,
-                fontWeight: FontWeight.w800,
-              ),
-            ),
-            const SizedBox(height: 8),
-            const Text(
-              'Manage devices registered to create offline payment codes.',
-              style: TextStyle(color: AppColours.subtle),
-            ),
-            const SizedBox(height: 20),
-            if (_busy) const Center(child: CircularProgressIndicator()),
-            if (_message != null)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 16),
-                child: Text(
-                  _message!,
-                  style: const TextStyle(color: AppColours.ink),
+              const SizedBox(height: 24),
+              const Text(
+                'YOUR SECURITY',
+                style: TextStyle(
+                  color: AppColours.eyebrow,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
                 ),
               ),
-            if (_devices != null && _devices!.isEmpty)
-              const Text('No registered devices.'),
-            for (final device in _devices ?? <Map<String, dynamic>>[])
-              Container(
-                margin: const EdgeInsets.only(bottom: 12),
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColours.fieldFill,
-                  borderRadius: BorderRadius.circular(18),
-                  border: Border.all(color: AppColours.fieldBorder),
+              const SizedBox(height: 8),
+              const Text(
+                'Devices',
+                style: TextStyle(
+                  color: AppColours.ink,
+                  fontSize: 28,
+                  fontWeight: FontWeight.w800,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        const Icon(
-                          Icons.phone_android,
-                          color: AppColours.cobalt,
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: Text(
-                            _name(device),
-                            style: const TextStyle(
-                              color: AppColours.ink,
-                              fontWeight: FontWeight.w800,
-                              fontSize: 16,
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                'Manage devices registered to create offline payment codes.',
+                style: TextStyle(color: AppColours.subtle),
+              ),
+              const SizedBox(height: 20),
+              if (_busy) const Center(child: CircularProgressIndicator()),
+              if (_message != null)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 16),
+                  child: Text(
+                    _message!,
+                    style: const TextStyle(color: AppColours.ink),
+                  ),
+                ),
+              if (_devices != null && _devices!.isEmpty)
+                const Text('No registered devices.'),
+              for (final device in _devices ?? <Map<String, dynamic>>[])
+                Container(
+                  margin: const EdgeInsets.only(bottom: 12),
+                  padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    color: AppColours.fieldFill,
+                    borderRadius: BorderRadius.circular(18),
+                    border: Border.all(color: AppColours.fieldBorder),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          const Icon(
+                            Icons.phone_android,
+                            color: AppColours.cobalt,
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              _name(device),
+                              style: const TextStyle(
+                                color: AppColours.ink,
+                                fontWeight: FontWeight.w800,
+                                fontSize: 16,
+                              ),
                             ),
                           ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '${device['prefix']}${_profile?.prefix == device['prefix'] ? ' · This device' : ''}',
-                      style: const TextStyle(color: AppColours.subtle),
-                    ),
-                    Text(
-                      'Device: ${device['status']}${device['grantStatus'] is String ? ' · Permission: ${device['grantStatus']}' : ''}',
-                      style: const TextStyle(color: AppColours.subtle),
-                    ),
-                    if (device['expiresAtEpochMs'] is int &&
-                        (device['expiresAtEpochMs'] as int) > 0)
+                        ],
+                      ),
+                      const SizedBox(height: 8),
                       Text(
-                        'Expires: ${DateTime.fromMillisecondsSinceEpoch(device['expiresAtEpochMs'] as int).toLocal().toString().split('.').first}',
+                        '${device['prefix']}${_profile?.prefix == device['prefix'] ? ' · This device' : ''}',
                         style: const TextStyle(color: AppColours.subtle),
                       ),
-                    if (_profile?.prefix == device['prefix'] &&
-                        _profile?.permissionLimit != null)
                       Text(
-                        'Maximum per payment: ${_profile!.permissionLimit}',
+                        'Device: ${device['status']}${device['grantStatus'] is String ? ' · Permission: ${device['grantStatus']}' : ''}',
                         style: const TextStyle(color: AppColours.subtle),
                       ),
-                    if (device['status'] == 'ACTIVE')
-                      TextButton(
-                        onPressed: _busy ? null : () => _confirmRevoke(device),
-                        child: const Text(
-                          'Revoke device',
-                          style: TextStyle(color: AppColours.cobalt),
+                      if (device['expiresAtEpochMs'] is int &&
+                          (device['expiresAtEpochMs'] as int) > 0)
+                        Text(
+                          'Expires: ${DateTime.fromMillisecondsSinceEpoch(device['expiresAtEpochMs'] as int).toLocal().toString().split('.').first}',
+                          style: const TextStyle(color: AppColours.subtle),
                         ),
-                      ),
-                    if (device['status'] == 'REVOKED' &&
-                        _profile?.prefix == device['prefix'])
-                      TextButton(
-                        onPressed: _busy
-                            ? null
-                            : () => _removeRevokedLocalProfile(
-                                device['prefix'] as String,
-                              ),
-                        child: const Text('Remove revoked local profile'),
-                      ),
-                  ],
+                      if (_profile?.prefix == device['prefix'] &&
+                          _profile?.permissionLimit != null)
+                        Text(
+                          'Maximum per payment: ${_profile!.permissionLimit}',
+                          style: const TextStyle(color: AppColours.subtle),
+                        ),
+                      if (device['status'] == 'ACTIVE')
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _confirmRevoke(device),
+                          child: const Text(
+                            'Revoke device',
+                            style: TextStyle(color: AppColours.cobalt),
+                          ),
+                        ),
+                      if (device['status'] == 'REVOKED' &&
+                          _profile?.prefix == device['prefix'])
+                        TextButton(
+                          onPressed: _busy
+                              ? null
+                              : () => _removeRevokedLocalProfile(
+                                  device['prefix'] as String,
+                                ),
+                          child: const Text('Remove revoked local profile'),
+                        ),
+                    ],
+                  ),
                 ),
-              ),
-            TextButton.icon(
-              onPressed: _busy ? null : _load,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Refresh devices'),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );

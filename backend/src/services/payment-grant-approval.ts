@@ -31,7 +31,7 @@ const APPROVAL_WINDOW_MS = 10 * 60 * 1000;
 const DEFAULT_CAP = "50000";
 const DEFAULT_PER_PAYMENT = "5000";
 const MAX_CAP = 1_000_000n;
-const DEFAULT_VALID_HOURS = 24;
+const DEFAULT_VALID_HOURS = 720;
 
 interface InteractionSecrets {
   clientNonce: string;
