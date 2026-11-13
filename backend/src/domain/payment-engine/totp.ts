@@ -273,6 +273,32 @@ export function generateTotp(
 }
 
 /**
+ * Verify against both supported rotations without any period metadata on the
+ * wire: first the default 30-second step (with the caller's drift), then the
+ * 30-minute long step with drift 0 (a long code lives exactly one bucket).
+ * First match wins so short codes keep their existing claim semantics when
+ * both could theoretically collide.
+ */
+export function verifyAnySupportedTotpPeriod(
+  secret: string,
+  code: unknown,
+  atEpochMs: number,
+  allowedDriftSteps: number,
+):
+  | { readonly valid: true; readonly timeStep: number; readonly periodMs: number }
+  | { readonly valid: false } {
+  const short = verifyTotp(secret, code, atEpochMs, allowedDriftSteps, TOTP_TIME_STEP_MS);
+  if (short.valid) {
+    return { valid: true, timeStep: short.timeStep, periodMs: TOTP_TIME_STEP_MS };
+  }
+  const long = verifyTotp(secret, code, atEpochMs, 0, TOTP_LONG_TIME_STEP_MS);
+  if (long.valid) {
+    return { valid: true, timeStep: long.timeStep, periodMs: TOTP_LONG_TIME_STEP_MS };
+  }
+  return { valid: false };
+}
+
+/**
  * Verify a presented six-character code against the secret at `atEpochMs`,
  * accepting the drift window given by `allowedDriftSteps`
  * (0 = current step only, 1 = current plus one step on each side, never

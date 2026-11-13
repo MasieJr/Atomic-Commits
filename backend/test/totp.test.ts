@@ -7,6 +7,7 @@ import {
   parseBase36PaymentCode as parsePaymentCode,
   TOTP_LONG_TIME_STEP_MS,
   TOTP_TIME_STEP_MS,
+  verifyAnySupportedTotpPeriod,
   verifyBase36Totp as verifyTotp,
   formatPaymentCode as formatApiPaymentCode,
   generateTotp as generateApiTotp,
@@ -204,4 +205,33 @@ test('malformed periodMs throws on generate and fails closed on verify', () => {
     assert.throws(() => generateApiTotp(RFC_SEED, 0, period as number), /period/);
     assert.throws(() => verifyApiTotp(RFC_SEED, '287082', 0, 0, period as number), /period/);
   }
+});
+
+test('verifyAnySupportedTotpPeriod dual-tries 30s then 30m without wire metadata', () => {
+  // Short code at drift 1 still resolves as 30s.
+  const short = generateApiTotp(RFC_SEED, 60_000);
+  assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, short.code, 60_000, 1), {
+    valid: true,
+    timeStep: short.timeStep,
+    periodMs: TOTP_TIME_STEP_MS,
+  });
+  // Long code from long step 1 (epoch base avoids the step-0 short/long counter
+  // collision at t=0, where both periods share HOTP counter 0).
+  const base = TOTP_LONG_TIME_STEP_MS;
+  const long = generateApiTotp(RFC_SEED, base, TOTP_LONG_TIME_STEP_MS);
+  assert.equal(long.timeStep, 1);
+  for (const ageMs of [0, 60_000, 900_000, 1_799_999]) {
+    assert.deepEqual(
+      verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + ageMs, 1),
+      { valid: true, timeStep: 1, periodMs: TOTP_LONG_TIME_STEP_MS },
+      `age ${ageMs}`,
+    );
+  }
+  // Past the long bucket: neither period accepts (long has drift 0).
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + TOTP_LONG_TIME_STEP_MS, 1),
+    { valid: false },
+  );
+  // Garbage fails closed.
+  assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, '000000', 0, 1), { valid: false });
 });

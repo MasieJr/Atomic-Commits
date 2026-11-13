@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 
-import { parsePaymentCode, verifyTotp } from "../domain/payment-engine/totp";
+import { parsePaymentCode, verifyAnySupportedTotpPeriod } from "../domain/payment-engine/totp";
 import { ApiError } from "../errors/api-error";
 import { DataEncryptionError, type DataEncryption } from "./data-encryption";
 import type { GrantAuthorityStore } from "./grant-authority-store";
@@ -26,9 +26,10 @@ import { createTotpReplayDigests } from "./totp-replay-digests";
  *
  * Order of operations (each step persisted before the next network call):
  *   1. idempotency: same merchant + key + request returns the original attempt
- *   2. verify the code against the encrypted device secret (server time, drift 0)
+ *   2. verify the code against the encrypted device secret (server time;
+ *      dual-try 30 s then 30 min — no period on the wire)
  *   3. ONE transaction, device + grant rows locked:
- *        attempt row + single-use claim (device, timeStep) + recent-code replay
+ *        attempt row + single-use claim (device, period, timeStep) + recent-code replay
  *        guard + budget reservation
  *   4. fresh provider quote; payer debit checked against the reservation
  *   5. status SUBMITTING saved, then the outgoing payment is submitted ONCE
@@ -571,8 +572,9 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
       if (error instanceof DataEncryptionError) throw codeInvalid();
       throw error;
     }
-    const verification = verifyTotp(secret, parsed.code, nowMs, allowedDriftSteps);
+    const verification = verifyAnySupportedTotpPeriod(secret, parsed.code, nowMs, allowedDriftSteps);
     if (!verification.valid) throw codeInvalid();
+    const periodSeconds = verification.periodMs / 1000;
     const digestsByVersion = replayDigests(device.id, parsed.code);
     const codeDigest = digestsByVersion.get(device.key_version);
     if (!codeDigest) throw codeInvalid();
@@ -612,10 +614,11 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
           [device.id],
         );
         const lockedNow = now();
-        const refreshedVerification = verifyTotp(secret, parsed.code, lockedNow, allowedDriftSteps);
+        const refreshedVerification = verifyAnySupportedTotpPeriod(secret, parsed.code, lockedNow, allowedDriftSteps);
         if (lockedDevice.rows[0]?.status !== "ACTIVE" || lockedDevice.rows[0].authorization_id !== device.authorization_id ||
             new Date(lockedDevice.rows[0].expires_at).getTime() <= lockedNow ||
-            !refreshedVerification.valid || refreshedVerification.timeStep !== verification.timeStep) throw codeInvalid();
+            !refreshedVerification.valid || refreshedVerification.timeStep !== verification.timeStep ||
+            refreshedVerification.periodMs !== verification.periodMs) throw codeInvalid();
         if (g.authority_source !== "PROVIDER") {
           throw new ApiError(409, "This device is linked to a demo placeholder grant that cannot move money.", "DEMO_GRANT");
         }
@@ -698,12 +701,12 @@ export function createOfflineRedemptionService(options: OfflineRedemptionOptions
         try {
           claim = await db.query(
             `INSERT INTO app_private.totp_code_claims
-               (device_id, time_step, code_digest, merchant_id, request_fingerprint, payment_attempt_id)
-             VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-            [device.id, verification.timeStep, codeDigest, merchant.id, fingerprint, id],
+               (device_id, period_seconds, time_step, code_digest, merchant_id, request_fingerprint, payment_attempt_id)
+             VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id`,
+            [device.id, periodSeconds, verification.timeStep, codeDigest, merchant.id, fingerprint, id],
           );
         } catch (error) {
-          if (isUniqueViolation(error, "totp_code_claims_device_id_time_step_key")) {
+          if (isUniqueViolation(error, "totp_code_claims_device_id_period_seconds_time_step_key")) {
             throw new ApiError(409, "This payment code was already used.", "CODE_ALREADY_USED");
           }
           throw error;
