@@ -1,8 +1,9 @@
 # Offline activity snapshots
 
 The Activity and Home screens can display the last successful payment-history
-response while the same session is offline. The implementation is in the PR;
-browser restart and device behavior still need verification before release.
+response while the same session is offline. A browser preview with simulated
+API responses confirmed offline restart and the receipt label. Real-provider,
+account-switch, and device behavior still need verification before release.
 
 ## Store a snapshot with its session
 

@@ -37,8 +37,9 @@ debit merely to complete a release.
 ## Offline read-only data
 
 - The activity snapshot is implemented in the PR and scoped to the existing
-  session. Verify browser restart, logout, and account-switch behavior. Finish
-  the separate wallet snapshot work with the same isolation guarantees.
+  session. A simulated browser preview confirmed offline restart. Verify
+  logout, account switching, and real-device behavior. Finish the separate
+  wallet snapshot work with the same isolation guarantees.
 - Purge or block snapshots on logout and definitive authorization rejection.
   Serialize account changes with cache writes, and prevent late responses from
   restoring another account's data. Handle storage failures across restarts.
