@@ -1,4 +1,4 @@
-import 'package:atomic_commits/core/widgets/app_header.dart';
+import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
@@ -6,8 +6,6 @@ class MainNavigation extends StatelessWidget {
   final StatefulNavigationShell navigationShell;
 
   const MainNavigation({super.key, required this.navigationShell});
-
-  static const List<String> titles = ['Home', 'Activity', 'Wallet', 'Profile'];
 
   void _onDestinationSelected(int index) {
     navigationShell.goBranch(
@@ -19,9 +17,11 @@ class MainNavigation extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppHeader(title: titles[navigationShell.currentIndex]),
-      body: navigationShell,
+      backgroundColor: AppColours.paperTop,
+      body: SafeArea(child: navigationShell),
       bottomNavigationBar: NavigationBar(
+        backgroundColor: AppColours.paperTop,
+        indicatorColor: AppColours.cobalt.withValues(alpha: 0.1),
         selectedIndex: navigationShell.currentIndex,
         onDestinationSelected: _onDestinationSelected,
         destinations: const [
@@ -37,7 +37,7 @@ class MainNavigation extends StatelessWidget {
           NavigationDestination(
             icon: Icon(Icons.account_balance_wallet_outlined),
             selectedIcon: Icon(Icons.account_balance_wallet_rounded),
-            label: 'Wallet',
+            label: 'Wallets',
           ),
           NavigationDestination(
             icon: Icon(Icons.person_outline_rounded),

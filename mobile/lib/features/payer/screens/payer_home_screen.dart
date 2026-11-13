@@ -334,93 +334,213 @@ class _PayerHomeScreenState extends State<PayerHomeScreen> {
     final seconds = code == null
         ? 0
         : code.expiresAt.difference(DateTime.now().toUtc()).inSeconds + 1;
+    final cardDecoration = BoxDecoration(
+      color: AppColours.fieldFill,
+      borderRadius: BorderRadius.circular(20),
+      border: Border.all(color: AppColours.fieldBorder),
+    );
     return Scaffold(
-      appBar: AppBar(title: const Text('Make payment')),
+      backgroundColor: AppColours.paperTop,
+      appBar: AppBar(
+        backgroundColor: AppColours.paperTop,
+        foregroundColor: AppColours.ink,
+        elevation: 0,
+        title: const Text('Pay', style: TextStyle(fontWeight: FontWeight.w700)),
+      ),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [
-          Text(
-            'Your payment code',
-            style: Theme.of(context).textTheme.headlineSmall,
-          ),
-          const SizedBox(height: 16),
-          if (_loading)
-            const Center(child: CircularProgressIndicator())
-          else if (_profile == null) ...[
-            const Text(
-              'Enroll this device while connected to use payment codes offline.',
+          const Text(
+            'Payment code',
+            style: TextStyle(
+              color: AppColours.ink,
+              fontSize: 27,
+              fontWeight: FontWeight.w800,
+              letterSpacing: -0.7,
             ),
-            const SizedBox(height: 16),
-            ElevatedButton(
+          ),
+          const SizedBox(height: 20),
+          if (_loading)
+            const Center(
+              child: CircularProgressIndicator(color: AppColours.cobalt),
+            )
+          else if (_profile == null) ...[
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: cardDecoration,
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.phonelink_setup_rounded,
+                    color: AppColours.cobalt,
+                    size: 28,
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    'Set up this device',
+                    style: TextStyle(
+                      color: AppColours.ink,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    'Enroll this device while connected to use payment codes offline.',
+                    style: TextStyle(color: AppColours.subtle, height: 1.4),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: AppColours.cobalt,
+                padding: const EdgeInsets.symmetric(vertical: 15),
+              ),
               onPressed: _busy ? null : _enroll,
               child: const Text('Enroll this device'),
             ),
             TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
               onPressed: _busy ? null : _manageDevices,
               child: const Text('Check registered devices'),
             ),
           ] else if (code == null) ...[
-            const Text(
-              'This device profile has expired. Connect and revoke it before enrolling again.',
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: cardDecoration,
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(Icons.info_outline_rounded, color: AppColours.orange),
+                  SizedBox(height: 10),
+                  Text(
+                    'Device profile expired',
+                    style: TextStyle(
+                      color: AppColours.ink,
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  SizedBox(height: 6),
+                  Text(
+                    'Connect and revoke it before enrolling again.',
+                    style: TextStyle(color: AppColours.subtle, height: 1.4),
+                  ),
+                ],
+              ),
             ),
             TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
               onPressed: _busy ? null : _revoke,
               child: const Text('Revoke expired device'),
             ),
           ] else ...[
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  children: [
-                    QrImageView(
-                      data: code.value,
-                      size: 220,
-                      backgroundColor: Colors.white,
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: cardDecoration,
+              child: Column(
+                children: [
+                  Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 220),
+                      child: AspectRatio(
+                        aspectRatio: 1,
+                        child: QrImageView(
+                          data: code.value,
+                          backgroundColor: Colors.white,
+                        ),
+                      ),
                     ),
-                    const SizedBox(height: 16),
-                    SelectableText(
-                      code.value,
-                      style: Theme.of(context).textTheme.headlineMedium,
+                  ),
+                  const SizedBox(height: 14),
+                  SelectableText(
+                    code.value,
+                    textAlign: TextAlign.center,
+                    style: const TextStyle(
+                      color: AppColours.ink,
+                      fontSize: 22,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1,
                     ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Current 30-second window ends in ${seconds.clamp(0, 30)} seconds',
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 7,
                     ),
-                    const Text('Each code can be used once.'),
-                  ],
-                ),
+                    decoration: BoxDecoration(
+                      color: AppColours.paperMid,
+                      borderRadius: BorderRadius.circular(30),
+                    ),
+                    child: Text(
+                      'Current window ends in ${seconds.clamp(0, 30)} seconds',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: AppColours.eyebrow,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Each code can be used once.',
+                    style: TextStyle(color: AppColours.subtle, fontSize: 12),
+                  ),
+                ],
               ),
             ),
             const SizedBox(height: 12),
-            if (_profile!.permissionLimit != null)
-              Text(
-                'Device limit at enrollment: ${_profile!.permissionLimit} per payment',
-              )
-            else
-              const Text(
-                'Device limit unavailable. Check device status online to see it.',
+            Text(
+              _profile!.permissionLimit != null
+                  ? 'Device limit at enrollment: ${_profile!.permissionLimit} per payment'
+                  : 'Device limit unavailable. Check device status online.',
+              style: const TextStyle(
+                color: AppColours.ink,
+                fontWeight: FontWeight.w600,
               ),
+            ),
+            const SizedBox(height: 6),
             const Text(
-              'Generated locally without internet. Revocation cannot be checked while offline.',
-              style: TextStyle(color: AppColours.textSecondary),
+              'Revocation cannot be checked while offline.',
+              style: TextStyle(color: AppColours.subtle, fontSize: 12),
             ),
             TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
               onPressed: _busy ? null : _checkStatus,
               child: const Text('Check device status online'),
             ),
             TextButton(
+              style: TextButton.styleFrom(foregroundColor: AppColours.cobalt),
               onPressed: _busy ? null : _revoke,
               child: const Text('Revoke this device'),
             ),
             const Text(
               'To use a new spending permission, revoke this device and enroll again.',
+              style: TextStyle(
+                color: AppColours.subtle,
+                fontSize: 12,
+                height: 1.4,
+              ),
             ),
           ],
           if (_message != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 12),
-              child: Text(_message!),
+            Container(
+              margin: const EdgeInsets.only(top: 12),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColours.paperMid,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColours.fieldBorder),
+              ),
+              child: Text(
+                _message!,
+                style: const TextStyle(color: AppColours.ink, height: 1.4),
+              ),
             ),
         ],
       ),

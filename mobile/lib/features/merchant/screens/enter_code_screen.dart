@@ -2,6 +2,7 @@ import 'dart:math';
 
 import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/app/router.dart';
+import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
@@ -255,8 +256,16 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
   Widget build(BuildContext context) {
     final wallet = _wallet;
     final payment = _payment;
+    const cream = AppColours.paperTop;
+    const cobalt = AppColours.cobalt;
     return Scaffold(
-      appBar: AppBar(title: const Text('Receive payment')),
+      backgroundColor: cream,
+      appBar: AppBar(
+        title: const Text('Receive payment'),
+        backgroundColor: cream,
+        foregroundColor: cobalt,
+        elevation: 0,
+      ),
       body: ListView(
         padding: const EdgeInsets.all(AppSpacing.screenPadding),
         children: [
@@ -351,19 +360,28 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
               child: const Text('Check payment status'),
             ),
           ] else ...[
-            Text('Receiving wallet: ${wallet!['address']}'),
-            const SizedBox(height: 16),
             Form(
               key: _formKey,
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   TextFormField(
                     controller: _amount,
+                    style: const TextStyle(
+                      color: cobalt,
+                      fontSize: 24,
+                      fontWeight: FontWeight.w700,
+                    ),
                     keyboardType: const TextInputType.numberWithOptions(
                       decimal: true,
                     ),
                     decoration: InputDecoration(
-                      labelText: 'Purchase amount (${wallet['assetCode']})',
+                      labelText: 'Purchase amount (${wallet!['assetCode']})',
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     validator: (value) =>
                         parseMinorAmount(
@@ -378,9 +396,20 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                   TextFormField(
                     controller: _code,
                     textCapitalization: TextCapitalization.characters,
-                    decoration: const InputDecoration(
+                    style: const TextStyle(
+                      color: cobalt,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                      letterSpacing: 1,
+                    ),
+                    decoration: InputDecoration(
                       labelText: 'Customer payment code',
                       hintText: 'ABC234-123456',
+                      filled: true,
+                      fillColor: Colors.white,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
                     ),
                     validator: (value) =>
                         RegExp(r'^[A-Z0-9]{4,12}-[0-9]{6}$')
@@ -391,14 +420,41 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                 ],
               ),
             ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColours.fieldFill,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppColours.fieldBorder),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'Receiving wallet',
+                    style: TextStyle(
+                      color: cobalt,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                  SelectableText('${wallet['address']}'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _busy ? null : _redeem,
               style: ElevatedButton.styleFrom(
-                disabledBackgroundColor: Theme.of(context).colorScheme.primary,
-                disabledForegroundColor: Theme.of(context)
-                    .colorScheme
-                    .onPrimary,
+                backgroundColor: cobalt,
+                foregroundColor: Colors.white,
+                disabledBackgroundColor: cobalt,
+                disabledForegroundColor: Colors.white,
+                minimumSize: const Size.fromHeight(52),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
               ),
               child: _busy
                   ? const Row(

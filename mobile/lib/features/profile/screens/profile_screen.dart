@@ -12,10 +12,7 @@ class ProfileScreen extends StatelessWidget {
   Future<void> _logout(BuildContext context) async {
     try {
       await getIt<AuthController>().logout();
-
-      if (context.mounted) {
-        context.go(AppRoutes.login);
-      }
+      if (context.mounted) context.go(AppRoutes.login);
     } catch (e) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -29,100 +26,138 @@ class ProfileScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final authController = getIt<AuthController>();
-    final user = authController.user;
+    final user = getIt<AuthController>().user;
+    final name = user?.name ?? 'User';
+    final email = user?.email ?? 'No email available';
 
     return ListView(
       padding: const EdgeInsets.all(AppSpacing.screenPadding),
       children: [
-        const SizedBox(height: 12),
-
-        Text('Your profile', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 6),
-
-        const Text(
-          'Manage your account and application settings.',
-          style: TextStyle(color: AppColours.textSecondary),
+        const SizedBox(height: 8),
+        Text(
+          'Profile',
+          style: Theme.of(context).textTheme.headlineSmall
+              ?.copyWith(color: AppColours.ink, fontWeight: FontWeight.w800),
         ),
-
-        const SizedBox(height: 28),
-
-        // Account information
-        Card(
-          color: AppColours.surfaceMuted,
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              children: [
-                const CircleAvatar(
-                  radius: 35,
-                  child: Icon(Icons.person_outline_rounded, size: 38),
-                ),
-                const SizedBox(height: 14),
-                Text(
-                  user?.name ?? 'User',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  user?.email ?? '',
-                  style: const TextStyle(color: AppColours.textSecondary),
+        const SizedBox(height: 20),
+        Row(
+          children: [
+            Container(
+              width: 50,
+              height: 50,
+              decoration: BoxDecoration(
+                color: AppColours.cobalt,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Icon(
+                Icons.person_rounded,
+                color: Colors.white,
+                size: 28,
+              ),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    name,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w800,
+                      color: AppColours.ink,
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Text(
+                    email,
+                    style: const TextStyle(
+                      fontSize: 13,
+                      color: AppColours.subtle,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 24),
+        const Text(
+          'ACCOUNT',
+          style: TextStyle(
+            fontSize: 11,
+            letterSpacing: 1.4,
+            fontWeight: FontWeight.w800,
+            color: AppColours.eyebrow,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _ProfileOption(
+          icon: Icons.badge_outlined,
+          title: 'Account details',
+          subtitle: 'Name and email address',
+          onTap: () => showDialog<void>(
+            context: context,
+            builder: (dialogContext) => AlertDialog(
+              title: const Text('Account details'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'NAME',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColours.textSecondary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(name),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'EMAIL',
+                    style: TextStyle(
+                      fontSize: 11,
+                      color: AppColours.textSecondary,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  SelectableText(email),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('Done'),
                 ),
               ],
             ),
           ),
         ),
-
-        const SizedBox(height: 28),
-
-        Text('Account', style: Theme.of(context).textTheme.titleLarge),
-        const SizedBox(height: 12),
-
-        _ProfileOption(
-          icon: Icons.person_outline,
-          title: 'Personal information',
-          subtitle: 'View your account details',
-          onTap: () {},
-        ),
-
-        _ProfileOption(
-          icon: Icons.security_outlined,
-          title: 'Security',
-          subtitle: 'Manage account security',
-          onTap: () {},
-        ),
-
         _ProfileOption(
           icon: Icons.help_outline_rounded,
-          title: 'Help and support',
-          subtitle: 'Get help using Atomic Commits',
-          onTap: () {
-            showAboutDialog(
-              context: context,
-              applicationName: 'Atomic Commits',
-              applicationVersion: '0.1.0',
-            );
-          },
+          title: 'About',
+          subtitle: 'Atomic Commits',
+          onTap: () => showAboutDialog(
+            context: context,
+            applicationName: 'Atomic Commits',
+          ),
         ),
-
-        const SizedBox(height: 28),
-
+        const SizedBox(height: 20),
         OutlinedButton.icon(
           onPressed: () => _confirmLogout(context),
           icon: const Icon(Icons.logout_rounded),
           label: const Text('Sign out'),
           style: OutlinedButton.styleFrom(
-            foregroundColor: Colors.red,
+            foregroundColor: AppColours.error,
+            side: const BorderSide(color: AppColours.fieldBorder),
             padding: const EdgeInsets.symmetric(vertical: 14),
-          ),
-        ),
-
-        const SizedBox(height: 20),
-
-        const Center(
-          child: Text(
-            'Atomic Commits v0.1.0',
-            style: TextStyle(color: AppColours.textSecondary, fontSize: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
           ),
         ),
       ],
@@ -147,7 +182,10 @@ class ProfileScreen extends StatelessWidget {
               Navigator.pop(dialogContext);
               _logout(context);
             },
-            child: const Text('Sign out', style: TextStyle(color: Colors.red)),
+            child: const Text(
+              'Sign out',
+              style: TextStyle(color: AppColours.error),
+            ),
           ),
         ],
       ),
@@ -171,12 +209,37 @@ class _ProfileOption extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
-      margin: const EdgeInsets.only(bottom: 10),
+      color: AppColours.fieldFill,
+      margin: const EdgeInsets.only(bottom: 9),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(15),
+        side: const BorderSide(color: AppColours.fieldBorder),
+      ),
       child: ListTile(
-        leading: Icon(icon, color: AppColours.primary),
-        title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-        subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-        trailing: const Icon(Icons.chevron_right_rounded),
+        leading: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            color: AppColours.cobalt.withValues(alpha: 0.09),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Icon(icon, color: AppColours.cobalt, size: 21),
+        ),
+        title: Text(
+          title,
+          style: const TextStyle(
+            fontWeight: FontWeight.w700,
+            color: AppColours.ink,
+          ),
+        ),
+        subtitle: Text(
+          subtitle,
+          style: const TextStyle(fontSize: 12, color: AppColours.subtle),
+        ),
+        trailing: const Icon(
+          Icons.chevron_right_rounded,
+          color: AppColours.fieldIcon,
+        ),
         onTap: onTap,
       ),
     );

@@ -328,20 +328,20 @@ class _WalletScreenState extends State<WalletScreen>
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: AppColours.paperTop,
       body: RefreshIndicator(
         onRefresh: _refresh,
         child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.all(AppSpacing.screenPadding),
           children: [
             const SizedBox(height: 12),
             Text(
-              'Your wallet',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 6),
-            const Text(
-              'Manage your wallet and payment permissions.',
-              style: TextStyle(color: AppColours.textSecondary),
+              'Wallets',
+              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                color: AppColours.ink,
+                fontWeight: FontWeight.w800,
+              ),
             ),
             const SizedBox(height: 24),
             if (_loading)
@@ -351,13 +351,9 @@ class _WalletScreenState extends State<WalletScreen>
                 'Wallet status is unavailable. Connect to the server and refresh.',
               )
             else if (_wallet == null) ...[
-              const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(20),
-                  child: Text(
-                    'No verified wallet is connected. Create a Test Wallet account or connect an existing wallet.',
-                  ),
-                ),
+              const Text(
+                'No verified wallet connected.',
+                style: TextStyle(color: AppColours.subtle),
               ),
               const SizedBox(height: 12),
               ElevatedButton.icon(
@@ -385,34 +381,62 @@ class _WalletScreenState extends State<WalletScreen>
                 label: const Text('Connect an existing wallet'),
               ),
             ] else ...[
-              Card(
-                color: AppColours.surfaceMuted,
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Icon(
-                        Icons.verified_user_outlined,
-                        color: AppColours.primary,
+              Container(
+                padding: const EdgeInsets.all(14),
+                decoration: BoxDecoration(
+                  color: AppColours.fieldFill,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: AppColours.fieldBorder),
+                ),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Icon(
+                      Icons.account_balance_wallet_outlined,
+                      color: AppColours.cobalt,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            _wallet!['publicName'] as String? ??
+                                'Verified wallet',
+                            style: const TextStyle(
+                              color: AppColours.ink,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          SelectableText(
+                            _wallet!['address'] as String,
+                            style: const TextStyle(
+                              color: AppColours.subtle,
+                              fontSize: 12,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            'Verified · ${_wallet!['assetCode']}',
+                            style: const TextStyle(
+                              color: AppColours.subtle,
+                              fontSize: 12,
+                            ),
+                          ),
+                        ],
                       ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'Verified wallet',
-                        style: TextStyle(fontWeight: FontWeight.bold),
-                      ),
-                      if (_wallet!['publicName'] != null)
-                        Text(_wallet!['publicName'] as String),
-                      SelectableText(_wallet!['address'] as String),
-                      Text('Asset: ${_wallet!['assetCode']}'),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 20),
+              const SizedBox(height: 24),
               Text(
                 'Spending permissions',
-                style: Theme.of(context).textTheme.titleLarge,
+                style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  color: AppColours.ink,
+                  fontWeight: FontWeight.w800,
+                ),
               ),
               if (_grants.isEmpty)
                 const Padding(
@@ -420,19 +444,64 @@ class _WalletScreenState extends State<WalletScreen>
                   child: Text('No spending permissions yet.'),
                 ),
               for (final grant in _grants)
-                Card(
-                  child: ListTile(
+                Container(
+                  margin: const EdgeInsets.only(top: 12),
+                  decoration: BoxDecoration(
+                    color: AppColours.fieldFill,
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppColours.fieldBorder),
+                  ),
+                  child: ExpansionTile(
                     title: Text(
-                      '${grant['status']} · ${grant['authoritySource']}',
+                      '${_grantAmount(grant['remaining'])} remaining',
+                      style: const TextStyle(
+                        color: AppColours.ink,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                     subtitle: Text(
-                      'Allowance: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['cumulativeCap'] as Map)).formatted}\n'
-                      'Per payment: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['perPaymentMaxDebit'] as Map)).formatted}\n'
-                      'Remaining: ${PaymentAmount.fromJson(Map<String, dynamic>.from(grant['remaining'] as Map)).formatted}\n'
-                      'Valid until: ${grant['validUntil']}',
+                      '${grant['status']} · ${grant['authoritySource'] == 'PROVIDER' ? 'Provider' : 'Not provider-authorized'}',
+                      style: const TextStyle(
+                        color: AppColours.subtle,
+                        fontSize: 12,
+                      ),
                     ),
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                        child: Column(
+                          children: [
+                            _permissionRow(
+                              'Approved',
+                              _grantAmount(grant['cumulativeCap']),
+                            ),
+                            _permissionRow(
+                              'Spent',
+                              _grantAmount(grant['spent']),
+                            ),
+                            _permissionRow(
+                              'Reserved',
+                              _grantAmount(grant['reserved']),
+                            ),
+                            _permissionRow(
+                              'Remaining',
+                              _grantAmount(grant['remaining']),
+                            ),
+                            _permissionRow(
+                              'Maximum per payment',
+                              _grantAmount(grant['perPaymentMaxDebit']),
+                            ),
+                            _permissionRow(
+                              'Valid until',
+                              '${grant['validUntil']}',
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                   ),
                 ),
+              const SizedBox(height: 12),
               ElevatedButton.icon(
                 onPressed: _busy ? null : _requestGrant,
                 icon: const Icon(Icons.verified_user_outlined),
@@ -455,13 +524,23 @@ class _WalletScreenState extends State<WalletScreen>
               ),
               const Text(
                 'Wallet balance is available from your provider.',
-                style: TextStyle(color: AppColours.textSecondary),
+                style: TextStyle(color: AppColours.subtle),
               ),
             ],
             if (_message != null)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 12),
-                child: Text(_message!),
+                child: Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: AppColours.paperMid,
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                  child: Text(
+                    _message!,
+                    style: const TextStyle(color: AppColours.ink),
+                  ),
+                ),
               ),
             if (_authorizationUrl != null) ...[
               TextButton(
@@ -489,4 +568,40 @@ class _WalletScreenState extends State<WalletScreen>
       ),
     );
   }
+
+  String _grantAmount(dynamic amount) {
+    try {
+      return PaymentAmount.fromJson(Map<String, dynamic>.from(amount as Map))
+          .formatted;
+    } catch (_) {
+      return 'Unavailable';
+    }
+  }
+
+  Widget _permissionRow(String label, String value) => Padding(
+    padding: const EdgeInsets.only(top: 8),
+    child: Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: const TextStyle(color: AppColours.subtle, fontSize: 13),
+          ),
+        ),
+        const SizedBox(width: 12),
+        Flexible(
+          child: Text(
+            value,
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              color: AppColours.ink,
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
 }
