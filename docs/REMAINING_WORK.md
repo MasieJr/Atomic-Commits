@@ -36,15 +36,15 @@ debit merely to complete a release.
 
 ## Offline read-only data
 
-- Finish the existing activity and wallet snapshot work. Scope each snapshot to
-  the API origin and account, store only the fields the view needs, and label
-  offline data with its last successful sync time.
+- The activity snapshot is implemented in the PR and scoped to the existing
+  session. Verify browser restart, logout, and account-switch behavior. Finish
+  the separate wallet snapshot work with the same isolation guarantees.
 - Purge or block snapshots on logout and definitive authorization rejection.
   Serialize account changes with cache writes, and prevent late responses from
   restoring another account's data. Handle storage failures across restarts.
 - Cached permissions are never spending authority or a wallet balance. Disable
   actions that need current server state when displaying a cached wallet.
-- The proposed session-scoped activity design is in
+- The session-scoped activity design is in
   [Offline activity snapshots](OFFLINE_ACTIVITY_DESIGN.md).
 
 ## Device continuity

@@ -27,6 +27,8 @@ class AuthController extends ChangeNotifier {
   bool get isInitialized => _isInitialized;
   bool get isAuthenticated => _user != null;
   bool get isNewAccount => _newAccount;
+  bool get isLoggingOut => _loggingOut;
+  int get sessionGeneration => _generation;
 
   Future<EmailVerificationState> emailVerificationState() =>
       _repository.emailVerificationState();
@@ -136,14 +138,15 @@ class AuthController extends ChangeNotifier {
     if (_loggingOut) return Future.error(StateError('Logout in progress'));
     _loggingOut = true;
     _generation++;
+    notifyListeners();
     final result = _serialize(() async {
       try {
         await _repository.logout();
         _user = null;
         _newAccount = false;
-        notifyListeners();
       } finally {
         _loggingOut = false;
+        notifyListeners();
       }
     });
     return result;

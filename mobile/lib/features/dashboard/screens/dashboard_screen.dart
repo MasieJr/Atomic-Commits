@@ -3,8 +3,8 @@ import 'package:atomic_commits/app/router.dart';
 import 'package:atomic_commits/app/theme/app_colours.dart';
 import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
-import 'package:atomic_commits/features/activity/data/payment_repository.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
+import 'package:atomic_commits/features/activity/payment_controller.dart';
 import 'package:atomic_commits/features/activity/payment_details.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
 import 'package:flutter/material.dart';
@@ -19,13 +19,11 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   final _auth = getIt<AuthController>();
+  final _activity = getIt<PaymentController>();
   int? _ownerId;
   int _generation = 0;
   String? _permission;
-  List<PaymentModel>? _payments;
   bool _permissionLoading = true;
-  bool _paymentsLoading = true;
-  bool _paymentsError = false;
 
   @override
   void initState() {
@@ -58,15 +56,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final generation = ++_generation;
     setState(() {
       _permission = null;
-      _payments = null;
       _permissionLoading = owner != null;
-      _paymentsLoading = owner != null;
-      _paymentsError = owner == null;
     });
     if (owner == null) return;
     await Future.wait([
       _loadPermission(generation, owner),
-      _loadPayments(generation, owner),
+      _activity.loadPayments(),
     ]);
   }
 
@@ -117,23 +112,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _permission = permission;
       _permissionLoading = false;
     });
-  }
-
-  Future<void> _loadPayments(int generation, int owner) async {
-    try {
-      final payments = await getIt<PaymentRepository>().getPayments();
-      if (!_current(generation, owner)) return;
-      setState(() {
-        _payments = payments;
-        _paymentsLoading = false;
-      });
-    } catch (_) {
-      if (!_current(generation, owner)) return;
-      setState(() {
-        _paymentsError = true;
-        _paymentsLoading = false;
-      });
-    }
   }
 
   @override
@@ -244,18 +222,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 ),
               ],
             ),
-            if (_paymentsLoading)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 16),
-                child: Text('Loading activity…'),
-              )
-            else if (_paymentsError)
-              const Text('Activity unavailable. Pull to refresh.')
-            else if (_payments == null || _payments!.isEmpty)
-              const Text('No payments yet.')
-            else
-              for (final payment in _payments!.take(3))
-                _RecentPayment(payment: payment),
+            ListenableBuilder(
+              listenable: _activity,
+              builder: (context, _) {
+                final state = _activity.state;
+                if (state is ActivityUnavailable) return Text(state.message);
+                if (state is! ActivityAvailable) {
+                  return const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 16),
+                    child: Text('Loading activity…'),
+                  );
+                }
+                final snapshot = state.snapshot;
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    if (snapshot.cached)
+                      Text(
+                        'Offline activity · Last synced ${snapshot.syncedAt.toLocal().toString().split('.').first}',
+                        style: const TextStyle(
+                          color: AppColours.subtle,
+                          fontSize: 12,
+                        ),
+                      ),
+                    if (snapshot.payments.isEmpty)
+                      const Text('No payments yet.')
+                    else
+                      for (final payment in snapshot.payments.take(3))
+                        _RecentPayment(
+                          payment: payment,
+                          cachedAt: snapshot.cached ? snapshot.syncedAt : null,
+                        ),
+                  ],
+                );
+              },
+            ),
           ],
         ),
       ),
@@ -264,8 +265,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 }
 
 class _RecentPayment extends StatelessWidget {
-  const _RecentPayment({required this.payment});
+  const _RecentPayment({required this.payment, this.cachedAt});
   final PaymentModel payment;
+  final DateTime? cachedAt;
 
   @override
   Widget build(BuildContext context) {
@@ -291,7 +293,7 @@ class _RecentPayment extends StatelessWidget {
           textAlign: TextAlign.end,
         ),
       ),
-      onTap: () => showPaymentDetails(context, payment),
+      onTap: () => showPaymentDetails(context, payment, cachedAt: cachedAt),
     );
   }
 }

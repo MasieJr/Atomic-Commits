@@ -1,42 +1,43 @@
 # Offline activity snapshots
 
-This is a proposed design. The current Activity and Home screens still require
-the server for payment history.
+The Activity and Home screens can display the last successful payment-history
+response while the same session is offline. The implementation is in the PR;
+browser restart and device behavior still need verification before release.
 
 ## Store a snapshot with its session
 
-Store the last successful activity response inside the existing secure session
+The app stores the last successful activity response inside the secure session
 record, alongside its user and token. This keeps the snapshot scoped to the API
 configuration and account. Deleting the session on logout also deletes its
 snapshot. A new session must not inherit another session's cached activity,
 even when both sessions belong to the same user.
 
-Persist only the payment fields needed by the existing receipt and activity
+The snapshot contains only the payment fields needed by the receipt and activity
 views. Keep amounts as minor-unit strings with their asset and scale. Do not
 store payment codes, device secrets, provider tokens, or authorization URLs.
 Treat payment history and names as sensitive data. Platform secure-storage
 properties vary and do not by themselves establish biometric protection.
 
-## Coordinate reads, writes, and logout
+## Reads, writes, and logout
 
-- Serialize session and snapshot changes through one storage owner. A snapshot
-  write must verify the same session and user immediately before writing.
-- Invalidate in-flight work when logout or an account change starts. A response
-  from the old session must not repopulate the new session's cache.
-- Prevent an older concurrent response from replacing a newer snapshot. A fresh
-  server response remains usable even when the cache write fails.
-- On an activity request rejected with `401` or `403`, block cached activity and
-  clear its persisted snapshot. A failed deletion must be surfaced and must not
-  make the snapshot available again in the current process.
-- Preserve existing session data when refreshing the same session. Discard the
-  snapshot when creating or restoring a different session.
+- One storage owner serializes session and snapshot changes. A snapshot write
+  checks the session and user before writing.
+- Logout and account changes invalidate in-flight work. Responses from an old
+  session cannot repopulate the new session's cache.
+- Home and Activity share one controller and one in-flight request. A fresh
+  response remains usable if the cache write fails.
+- A `401` or `403` on the activity request blocks cached activity and clears its
+  persisted snapshot. If that write fails, the UI reports the failure and keeps
+  the snapshot blocked in the current process.
+- A refresh of the same session retains its snapshot. A different session starts
+  without one.
 
 ## Display cached activity honestly
 
-Use a snapshot only when a request fails because the device is disconnected or
+The app uses a snapshot only when a request fails because the device is disconnected or
 the connection times out without an HTTP response. Never treat a `401`, `403`,
 server error, malformed response, or cancelled request as offline success.
-Label the list and any opened receipt as offline data and show the last
+The list and any opened receipt label offline data and show the last
 successful sync time. A cached permission is not a current wallet balance or
 authority to spend.
 

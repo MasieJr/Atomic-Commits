@@ -1,4 +1,5 @@
 import 'package:atomic_commits/core/network/api_client.dart';
+import 'package:atomic_commits/core/network/network_errors.dart';
 import 'package:atomic_commits/core/storage/token_storage.dart';
 import 'package:atomic_commits/features/auth/data/auth_api.dart';
 import 'package:atomic_commits/features/auth/models/auth_response.dart';
@@ -88,7 +89,7 @@ class AuthRepository {
         await logout();
         return null;
       }
-      if ((statusCode == null || statusCode >= 500) && session?.user != null) {
+      if (isOfflineFailure(error) && session?.user != null) {
         return UserModel.fromJson(session!.user!);
       }
       rethrow;

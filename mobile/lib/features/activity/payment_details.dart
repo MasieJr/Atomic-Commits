@@ -1,7 +1,14 @@
+import 'package:atomic_commits/app/dependencies.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
+import 'package:atomic_commits/features/activity/payment_controller.dart';
 import 'package:flutter/material.dart';
 
-void showPaymentDetails(BuildContext context, PaymentModel payment) {
+void showPaymentDetails(
+  BuildContext context,
+  PaymentModel payment, {
+  DateTime? cachedAt,
+}) {
+  final controller = cachedAt == null ? null : getIt<PaymentController>();
   showModalBottomSheet<void>(
     context: context,
     isScrollControlled: true,
@@ -9,7 +16,26 @@ void showPaymentDetails(BuildContext context, PaymentModel payment) {
     builder: (context) => SafeArea(
       child: FractionallySizedBox(
         heightFactor: 0.9,
-        child: PaymentReceipt(payment: payment),
+        child: controller == null
+            ? PaymentReceipt(payment: payment)
+            : ListenableBuilder(
+                listenable: controller,
+                builder: (context, _) {
+                  final state = controller.state;
+                  if (state is! ActivityAvailable ||
+                      !state.snapshot.cached ||
+                      state.snapshot.syncedAt != cachedAt) {
+                    return const Material(
+                      child: Center(
+                        child: Text(
+                          'Activity changed. Close this receipt to see the latest status.',
+                        ),
+                      ),
+                    );
+                  }
+                  return PaymentReceipt(payment: payment, cachedAt: cachedAt);
+                },
+              ),
       ),
     ),
   );
@@ -21,10 +47,12 @@ class PaymentReceipt extends StatelessWidget {
     super.key,
     required this.payment,
     this.scrollable = true,
+    this.cachedAt,
   });
 
   final PaymentModel payment;
   final bool scrollable;
+  final DateTime? cachedAt;
 
   static const _cream = Color(0xFFFFF8E9);
   static const _cobalt = Color(0xFF193CA6);
@@ -106,6 +134,13 @@ class PaymentReceipt extends StatelessWidget {
               ),
             ],
           ),
+          if (cachedAt != null) ...[
+            const SizedBox(height: 16),
+            Text(
+              'Offline snapshot · Last synced ${cachedAt!.toLocal().toString().split('.').first}',
+              style: const TextStyle(color: _ink, fontSize: 12),
+            ),
+          ],
           const SizedBox(height: 28),
           Text(
             completed ? (sent ? 'You sent' : 'You received') : 'Payment amount',
@@ -151,8 +186,8 @@ class PaymentReceipt extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           if (completed && differentAmounts) ...[
-            _ReceiptRow(label: 'Payer debited', value: debit!.formatted),
-            _ReceiptRow(label: 'Merchant received', value: received!.formatted),
+            _ReceiptRow(label: 'Payer debited', value: debit.formatted),
+            _ReceiptRow(label: 'Merchant received', value: received.formatted),
           ],
           if (!completed) ...[
             if (payment.payerDebitQuoted != null)

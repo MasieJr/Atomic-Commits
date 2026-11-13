@@ -24,8 +24,13 @@ Future<void> configureDependencies() async {
   );
 
   final paymentRepository = PaymentRepository(paymentApi);
-  final paymentController = PaymentController(paymentRepository);
   final authController = AuthController(authRepository);
+  final paymentController = PaymentController(
+    paymentRepository,
+    tokenStorage,
+    authController,
+    apiClient,
+  );
 
   getIt.registerSingleton<ApiClient>(apiClient);
   getIt.registerSingleton<TokenStorage>(tokenStorage);
