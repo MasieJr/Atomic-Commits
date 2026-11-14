@@ -1,10 +1,13 @@
+import 'package:atomic_commits/app/theme/app_colours.dart';
+import 'package:atomic_commits/app/theme/app_spacing.dart';
 import 'package:flutter/material.dart';
 
-import '../../app/theme/app_colours.dart';
-import '../../app/theme/app_spacing.dart';
-
 class AppHeader extends StatelessWidget implements PreferredSizeWidget {
-  const AppHeader({super.key});
+  final String? title;
+  final List<Widget>? actions;
+  final bool showHelp;
+
+  const AppHeader({super.key, this.title, this.actions, this.showHelp = true});
 
   @override
   Size get preferredSize => const Size.fromHeight(64);
@@ -35,23 +38,25 @@ class AppHeader extends StatelessWidget implements PreferredSizeWidget {
             ),
           ),
           const SizedBox(width: 10),
-          const Text(
-            'Atomic Commits',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+          Text(
+            title ?? 'Atomic Commits',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
           ),
         ],
       ),
       actions: [
-        IconButton(
-          onPressed: () {
-            showAboutDialog(
-              context: context,
-              applicationName: 'Atomic Commits',
-              applicationVersion: '0.1.0',
-            );
-          },
-          icon: const Icon(Icons.help_outline_rounded),
-        ),
+        ...?actions,
+        if (showHelp)
+          IconButton(
+            onPressed: () {
+              showAboutDialog(
+                context: context,
+                applicationName: 'Atomic Commits',
+                applicationVersion: '0.1.0',
+              );
+            },
+            icon: const Icon(Icons.help_outline_rounded),
+          ),
         const SizedBox(width: 12),
       ],
       bottom: const PreferredSize(

@@ -10,6 +10,8 @@ export function createAuthRouter(
 ): Router {
   const router = Router();
 
+  router.get('/email-verification/status', controller.emailVerificationStatus);
+  router.post('/email-code', controller.sendEmailCode);
   router.post('/register', controller.register);
   router.post('/login', controller.login);
   router.get('/me', createRequireLogin(tokens), controller.me);

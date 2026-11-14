@@ -1,0 +1,21 @@
+[Unit]
+Description=Atomic Commits backend
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=atomic-commits
+Group=atomic-commits
+WorkingDirectory=/opt/atomic-commits/app
+EnvironmentFile=/etc/atomic-commits/backend.env
+ExecStart=/opt/atomic-commits/runtime/bin/node /opt/atomic-commits/app/dist/server.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

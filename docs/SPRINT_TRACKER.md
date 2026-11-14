@@ -1,0 +1,65 @@
+# Offline-authorisation integration sprint
+
+Last updated: 2026-11-13. Statuses describe observed results, not planned work.
+
+Prioritize the end-to-end demo path and live provider proof. The user requested no further local PostgreSQL setup or PostgreSQL-specific tests; use the existing Supabase environment. Six hours is a prioritization target, not a reason to stop incomplete work.
+
+## Integration baseline
+
+- Repository: `MasieJr/Atomic-Commits`; working branch: `payments/offline-envelope-signed-qr`.
+- Fetched all remotes. Before integration, `HEAD` was `a48f990`, an ancestor of `origin/main` (`6646e51`); PR #7 was open and its head `95015df` was not in the working branch.
+- Fast-forwarded to `origin/main`, then merged `origin/frotned/onboard`. The sole conflict, `mobile/web/index.html`, was resolved retaining the PR's theme and onboarding metadata. The integration was pushed to [PR #7](https://github.com/MasieJr/Atomic-Commits/pull/7), which GitHub reports as mergeable.
+- Preserved the pre-existing, uncommitted backend edits and untracked tests. Normalized PR text line endings in the staged result to avoid unrelated churn.
+- Backend uses signed JWT bearer tokens; registration and login return a user and token, and `/api/auth/me` returns `{ user }`. Logout discards the client token; there is no server-side JWT revocation.
+- Backend TypeScript check: **PASS**, `npm run typecheck`.
+- Backend tests: `npx tsx --test --test-concurrency=1 test/*.test.ts` **PASS** for the runnable suite: 369 passed, 0 failed and 44 database-specific tests skipped. The suite includes pre-existing untracked tests. An earlier parallel run timed out under load; the previously failing enrollment tests passed alone and in the final serial run.
+- Backend enrollment tests rerun alone: **PASS**, 6/6 (`npx tsx --test test/api-enrollment.test.ts`).
+- Flutter: SDK 3.47.0 is at `%USERPROFILE%\Development\SDKs\flutter\bin\flutter.bat`, outside `PATH`. Dependencies resolved. Running from a temporary `X:` mapping avoids a Windows SDK-path-with-spaces native-assets error. Initial suite: 10 passed, 18 failed. After updating stale preview-era tests and dependency setup, `flutter test --no-pub --reporter expanded --concurrency=1`: **PASS**, 40 tests. Session, wallet and checkout tests use a simulated API.
+- Database: the configured target is Supabase. A read-only query reported migrations `001_auth.sql` through `004_grant_approvals.sql` applied. `npm run db:migrate` then completed against Supabase with the additive `005_verified_wallets.sql`. The migrator records versions but does not verify checksums.
+- Imported the existing `origin/backend/grant-approval` changes using a three-way patch, including `004_grant_approvals.sql`, API consent endpoints, provider hardening, tests and Swagger documentation. This copies its changes but does not add that branch as a merge parent. Grant creation now requires the caller's verified wallet.
+- Official [wallet ownership guidance](https://openpayments.dev/guides/verify-wallet-address-ownership/) specifies a subject-based interactive grant; public metadata alone does not prove control. The [test-wallet setup guide](https://openpayments.dev/sdk/before-you-begin/) directs users to the provider's registration and account-creation interface.
+- Live provider probe: the configured Test Wallet accepted a subject-only interactive verification request and confirmed cancellation of the pending grant. This did not include owner consent, establish a wallet link, or make a payment.
+- Provider confirmation now checks the outgoing and incoming references, payer, quote, exact received amount and both assets before reporting success. Focused provider tests: **PASS**, 7 tests with a simulated SDK; no successful live payment evidence.
+- A temporary local PostgreSQL migration check had already started when the instruction to skip PostgreSQL work arrived. Migrations printed success twice, but cleanup failed with a locked temporary directory. No further local PostgreSQL checks will be run.
+- Flutter web: `flutter build web --debug --no-pub --no-wasm-dry-run` **PASS**. On this 4 GB machine the default simultaneous JavaScript and Wasm dry-run compilation timed out. `node tool/web_smoke.mjs build/web` **PASS** in headless Edge with a simulated API: separate signup and login, mock enrollment, an offline QR matching the test secret with zero offline API calls, merchant checkout, and a simulated replay rejection with one mock debit. A prior browser run exposed an unsupported 64-bit JavaScript operation; the generator now uses two 32-bit counter words and `tool/verify_totp_web.dart` checks RFC vectors in compiled JavaScript.
+- `flutter doctor -v` reports no Android SDK on this machine. A native Android build and physical-device offline restart remain unverified; Edge is available for the browser demo.
+- `flutter analyze --no-pub`: **PASS**. Backend `npm run typecheck`: **PASS**. Focused backend checks after provider and API changes also passed; provider calls in those tests are simulated.
+- Supabase already contains version-1 encrypted provider credentials, device profiles and approval interactions. At the user's request, a new version-2 key was generated in the ignored local `backend/.env`; it was not printed. The original version-1 key is not configured locally, so old encrypted records cannot yet be read. The updated keyring preserves the old ciphertext and accepts its original key separately as `DATA_ENCRYPTION_KEY_V1`.
+- With the new key, a local backend probe returned HTTP 200 for `/health` and HTTP 401 for an unauthenticated `/api/wallet`, confirming that the wallet route is mounted. `PUBLIC_BASE_URL` remains unset.
+- The user-supplied `http://13.246.236.101:3000` returned HTTP 200 for `/health`, but its OpenAPI document does not contain the wallet approval endpoint. HTTPS on port 3000 failed TLS negotiation and HTTPS on port 443 timed out. The Azure HTTPS deployment below replaces it for this demo; the old AWS server was not stopped.
+- Azure deployment: the updated app is live at `https://varsity-connect-vc-2026.spaincentral.cloudapp.azure.com/`. Nginx serves the Flutter web build and proxies `/api` to `atomic-commits.service` on `127.0.0.1:3100`. Public `/` and `/health` returned HTTP 200, unauthenticated `/api/wallet` returned HTTP 401, and OpenAPI contains wallet approval routes. A dummy login returned 401 after reaching Supabase. A real Edge browser displayed the desktop phone frame and opened signup.
+- The VM's Test Wallet developer identity successfully started and cancelled a subject-only verification grant. No wallet owner approved that probe and no funds moved. The current VM uses the new version-2 encryption key; version-1 records remain unreadable without their original key.
+- The deployed backend recorded two provider-approved spending grants. Initial payment attempts were recorded as `FAILED / PROVIDER_FAILED` and `REJECTED / QUOTE_EXCEEDS_LIMIT`. The merchant screen now distinguishes those reasons from an unresolved outcome.
+- The grant-limit failures used an older device enrolled against a ZAR 50 total / ZAR 5 per-payment grant. After the device was revoked and enrolled against the newer ZAR 500 total / ZAR 200 per-payment grant, the user completed one successful transfer. A direct provider read confirmed EUR 5.00 received and ZAR 92.06 sent. See [SPRINT_EVIDENCE.md](SPRINT_EVIDENCE.md) for the redacted reference. The user's device connectivity during code generation was not independently observed.
+- A second provider-confirmed transfer received EUR 1.00 and sent ZAR 18.42. The user reported that reusing its code was rejected. The provider's grant counter matched the two recorded debits exactly, ZAR 110.48 total; no extra debit was observed.
+- The user reported two further transfers with the payer offline. Direct provider reads confirmed EUR 1.00 received and ZAR 18.42 sent for each. The provider's grant counter matched all four recorded debits at ZAR 147.32. The original sprint requested five successful transfers; four are recorded.
+- A read-only Supabase inspection found two accounts with verified-wallet records and two merchant records tied to verified wallets. The initially inspected attempts involved different payer and merchant users and different wallet addresses. That inspection alone did not establish that User B registered through Flutter or that a payment settled; the later provider reads above confirmed settlement separately.
+- The former `varsity-connect` and `varsity-connect-housing-preview` app processes were stopped and disabled. MySQL, Nginx, their data and their uploads remain in place. The original Nginx file is saved at `/etc/nginx/sites-available/varsity-connect.pre-atomic-20261113`; see [VM deployment notes](../deploy/azure-vm/README.md) for rollback.
+- Payment hardening now retains ambiguous submissions when a provider listing finds no outgoing payment, checks confirmed received amounts and references, and rechecks grant/device state before submission. Enrollment now locks the grant against concurrent revocation. These database-dependent changes have not been exercised against Supabase because PostgreSQL-specific tests were skipped at the user's request.
+- A locally revoked grant with an unresolved payment is kept at the provider for reconciliation. The current read path does not rotate a token after the local grant becomes `REVOKED`; if that token expires, provider-side inspection may be needed to resolve the payment.
+
+## Milestones
+
+| Milestone | Status | Acceptance and evidence | Blockers / next steps |
+| --- | --- | --- | --- |
+| M0 — integration baseline | PASS | PR #7 is mergeable on GitHub. Flutter and the runnable backend suite passed, and Supabase migrations were applied. | The 44 database-specific tests remain skipped as requested. GitHub reported no configured status checks at publication. |
+| M1 — independent accounts | NOT TESTED | Two users and distinct wallet associations appear in the recent attempts. Flutter session tests and a browser smoke test pass with simulated API accounts. | Verify real registration, logout, restart and resource isolation through Flutter. |
+| M2 — wallet onboarding | NOT TESTED | Two accounts have verified-wallet records. The deployed VM also started and cancelled a live subject-only request. | Confirm User B's provider account creation and wallet-link journey through Flutter. |
+| M3 — spending permission | PASS | The deployed backend recorded provider-approved grants. The user's newer grant was associated with the verified payer wallet and completed a provider-confirmed payment. | Grant expiry and token rotation still need live verification. |
+| M4 — offline code | PASS | The user reported two payments with the payer offline, and both were confirmed by provider reads. RFC vectors and an offline browser smoke test also passed. | Remote revocation cannot be detected while offline. |
+| M5 — merchant redemption | PASS | Four transfers were confirmed by the provider. The user reported that replay was rejected, and the provider grant counter showed no extra debit. | The payer's offline state for the final two transfers is user-reported. |
+| M6 — history and balance | NOT TESTED | Account-scoped payment list and Flutter history display sender or recipient, amounts, status and provider references. The app directs users to the provider for balance. | Verify both users' histories against actual provider transactions. |
+| M7 — reliability | BLOCKED | Four provider-confirmed test transfers are recorded. The user reported replay rejection, corroborated by the provider grant counter. | One more successful app-driven test-network transaction was requested in the original sprint. Database-specific tests were skipped as requested. |
+
+## Human setup needed for live verification
+
+1. Use the Azure HTTPS application above for the demo. The separate old version-1-only AWS server remains online; stop or upgrade it before relying on shared production payment processing.
+2. The original version-1 key is unavailable. The payer must verify their wallet again, approve a new grant and enroll a device under version 2. Existing encrypted records remain intact.
+3. For each real participant, use the [official test-wallet registration](https://wallet.interledger-test.dev/auth/signup), verify the email, create a wallet account and wallet address, and fund the sender with test money. The wallet owners must approve the interactive consent screens themselves.
+
+## Safety and evidence
+
+- A `DEMO_PLACEHOLDER` grant is test data, not provider spending authority.
+- Never infer settlement from submission, a mock, or a pending/unknown outcome. Retain redacted provider receipt references when live transactions are actually verified.
+- Do not place wallet credentials, signing keys, JWTs, TOTP secrets or provider tokens in the tracker or other committed evidence.
+- Human provider registration, key registration, funding and consent may be required; record the exact remaining actions once the actual provider flow has been verified.

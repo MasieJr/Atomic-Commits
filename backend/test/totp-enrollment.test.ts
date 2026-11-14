@@ -71,6 +71,11 @@ async function fixture(t: TestContext) {
   }
 
   async function insertGrant(userId: number, overrides: { status?: string; validFrom?: string; validUntil?: string } = {}) {
+    await pool.query(
+      `INSERT INTO app_private.verified_wallets (user_id, wallet_address, auth_server_url, asset_code, asset_scale)
+       VALUES ($1, '$ilp.example/payer', 'https://auth.example', 'ZAR', 2)
+       ON CONFLICT (user_id) DO NOTHING`, [userId],
+    );
     const { rows } = await pool.query(
       `INSERT INTO app_private.payment_grants
          (payer_user_id, payer_wallet_address, authority_source, status, asset_code, asset_scale,

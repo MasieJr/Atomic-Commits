@@ -4,9 +4,11 @@ import { test } from 'node:test';
 
 import {
   createDataEncryption,
+  createDataEncryptionFromEnv,
   DataEncryptionError,
   parseEncryptionKey,
 } from '../src/services/data-encryption';
+import { createTotpReplayDigests } from '../src/services/totp-replay-digests';
 
 const keyA = randomBytes(32);
 const keyB = randomBytes(32);
@@ -58,4 +60,25 @@ test('keys must be exactly 32 bytes of base64 and the error never echoes the key
     assert.equal((error as Error).message.includes(bad), false);
   }
   assert.equal(parseEncryptionKey(keyA.toString('base64')).length, 32);
+});
+
+test('a new configured key version does not overwrite access to older ciphertext', () => {
+  const old = createDataEncryptionFromEnv({ DATA_ENCRYPTION_KEY: keyA.toString('base64') });
+  const sealed = old.encrypt('old secret', 'ctx');
+  const freshOnly = createDataEncryptionFromEnv({ DATA_ENCRYPTION_KEY: keyB.toString('base64'), DATA_ENCRYPTION_KEY_VERSION: '2' });
+  assert.equal(freshOnly.encrypt('new secret', 'ctx').keyVersion, 2);
+  assert.throws(() => freshOnly.decrypt(sealed, 'ctx'), DataEncryptionError);
+  const restored = createDataEncryptionFromEnv({
+    DATA_ENCRYPTION_KEY: keyB.toString('base64'), DATA_ENCRYPTION_KEY_VERSION: '2', DATA_ENCRYPTION_KEY_V1: keyA.toString('base64'),
+  });
+  assert.equal(restored.decrypt(sealed, 'ctx'), 'old secret');
+});
+
+test('replay checks cover digests created by the current and previous encryption keys', () => {
+  const oldDigest = createTotpReplayDigests(new Map([[1, keyA]]))('device-a', '123456').get(1)!;
+  const newDigest = createTotpReplayDigests(new Map([[2, keyB]]))('device-a', '123456').get(2)!;
+  const both = createTotpReplayDigests(new Map([[2, keyB], [1, keyA]]))('device-a', '123456');
+  assert.ok(both.get(1)?.equals(oldDigest));
+  assert.ok(both.get(2)?.equals(newDigest));
+  assert.ok(!both.get(1)?.equals(createTotpReplayDigests(new Map([[1, keyA]]))('device-b', '123456').get(1)!));
 });

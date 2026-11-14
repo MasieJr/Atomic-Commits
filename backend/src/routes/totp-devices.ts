@@ -22,6 +22,7 @@ export function createTotpDevicesRouter(
   );
 
   router.post("/totp/enroll", controller.enroll);
+  router.get("/totp", controller.list);
   router.get("/totp/:prefix/status", controller.status);
   router.post("/totp/:prefix/revoke", controller.revoke);
 

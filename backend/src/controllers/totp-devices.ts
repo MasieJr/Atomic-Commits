@@ -22,11 +22,15 @@ export function createTotpDevicesController(service: TotpEnrollmentService) {
     res.json(await service.getStatus(requireUserId(req.userId), req.params.prefix));
   };
 
+  const list: RequestHandler = async (req, res) => {
+    res.json({ devices: await service.listDevices(requireUserId(req.userId)) });
+  };
+
   const revoke: RequestHandler = async (req, res) => {
     res.json(await service.revokeDevice(requireUserId(req.userId), req.params.prefix));
   };
 
-  return { enroll, status, revoke };
+  return { enroll, list, status, revoke };
 }
 
 export type TotpDevicesController = ReturnType<typeof createTotpDevicesController>;

@@ -2,7 +2,9 @@ import bcrypt from "bcrypt";
 import type { RequestHandler } from "express";
 
 import type { UserRepository } from "../models/users";
+import { ApiError } from "../errors/api-error";
 import { DuplicateEmailError } from "../errors/auth";
+import type { EmailVerificationPolicy } from "../services/email-verification";
 import type { AccessTokenService } from "../services/tokens";
 
 /* Precomputed at registration's cost so missing users still incur bcrypt work. */
@@ -20,9 +22,35 @@ function requestBody(body: unknown): Record<string, unknown> {
 export function createAuthController(
   users: UserRepository,
   tokens: AccessTokenService,
+  emailPolicy: EmailVerificationPolicy = { kind: "disabled" },
 ) {
+  const emailVerificationStatus: RequestHandler = (_req, res) => {
+    res.json({
+      required: emailPolicy.kind === "required",
+      available: emailPolicy.kind === "disabled" || emailPolicy.verifier !== undefined,
+    });
+  };
+
+  const sendEmailCode: RequestHandler = async (req, res) => {
+    const { email } = requestBody(req.body);
+    if (typeof email !== "string") {
+      res.status(400).json({ error: "Enter a valid email address" });
+      return;
+    }
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
+      res.status(400).json({ error: "Enter a valid email address" });
+      return;
+    }
+    if (emailPolicy.kind !== "required" || !emailPolicy.verifier) {
+      throw new ApiError(503, "Email verification is not available.", "EMAIL_SERVICE_UNAVAILABLE");
+    }
+    await emailPolicy.verifier.sendCode(cleanEmail);
+    res.status(202).json({ message: "Check your email for a verification code." });
+  };
+
   const register: RequestHandler = async (req, res) => {
-    const { name, email, password } = requestBody(
+    const { name, email, password, emailCode } = requestBody(
       req.body,
     ); /* aforementioned validation of body */
 
@@ -64,6 +92,19 @@ export function createAuthController(
         error: "Password must be at least 8 characters and no more than 72 bytes",
       });
       return;
+    }
+
+    if (emailPolicy.kind === "required") {
+      if (!emailPolicy.verifier) {
+        throw new ApiError(503, "Email verification is not available.", "EMAIL_SERVICE_UNAVAILABLE");
+      }
+      if (typeof emailCode !== "string" || !/^[0-9]{6,10}$/.test(emailCode)) {
+        res.status(400).json({ error: "Enter the verification code sent to your email." });
+        return;
+      }
+      await emailPolicy.verifier.verifyCode(cleanEmail, emailCode);
+    } else if (emailCode !== undefined) {
+      throw new ApiError(409, "Signup settings changed. Please start again.", "EMAIL_POLICY_CHANGED");
     }
 
     /* Store a salted hash instead of the password; 12 is bcrypt's work factor. */
@@ -142,7 +183,7 @@ export function createAuthController(
     res.json({ message: "Logged out successfully" });
   };
 
-  return { register, login, me, logout };
+  return { emailVerificationStatus, sendEmailCode, register, login, me, logout };
 }
 
 export type AuthController = ReturnType<typeof createAuthController>;

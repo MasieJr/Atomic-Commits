@@ -78,9 +78,25 @@ export function createDataEncryption(
   };
 }
 
-/** Build the service from the environment: one current key, version 1. */
+export function parseDataEncryptionKeyring(env: Record<string, string | undefined> = process.env) {
+  const rawVersion = env.DATA_ENCRYPTION_KEY_VERSION?.trim() || "1";
+  if (!/^[1-9][0-9]{0,4}$/.test(rawVersion) || Number(rawVersion) > 32767) {
+    throw new DataEncryptionError("DATA_ENCRYPTION_KEY_VERSION must be a positive small integer.");
+  }
+  const currentVersion = Number(rawVersion);
+  const currentKey = parseEncryptionKey(env.DATA_ENCRYPTION_KEY);
+  const keys = new Map<number, Buffer>([[currentVersion, currentKey]]);
+  if (env.DATA_ENCRYPTION_KEY_V1?.trim()) {
+    if (currentVersion === 1) throw new DataEncryptionError("A separate version-1 key requires a newer current key version.");
+    keys.set(1, parseEncryptionKey(env.DATA_ENCRYPTION_KEY_V1));
+  }
+  return { currentVersion, currentKey, keys };
+}
+
+/** Build the service from the current key and an optional previous version-1 key. */
 export function createDataEncryptionFromEnv(
   env: Record<string, string | undefined> = process.env,
 ): DataEncryption {
-  return createDataEncryption(new Map([[1, parseEncryptionKey(env.DATA_ENCRYPTION_KEY)]]), 1);
+  const { currentVersion, keys } = parseDataEncryptionKeyring(env);
+  return createDataEncryption(keys, currentVersion);
 }

@@ -16,6 +16,7 @@ export function createAuthRateLimiter(): Router {
   /* 60 requests overall on /auth and 10 per 15m on login, 5 per 15m on register */
   router.use(limit(60));
   router.post("/login", limit(10));
+  router.post("/email-code", limit(5));
   router.post("/register", limit(5));
 
   return router;
