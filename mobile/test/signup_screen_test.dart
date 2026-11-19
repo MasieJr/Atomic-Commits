@@ -27,6 +27,7 @@ class _TestAuthController extends AuthController {
     required String name,
     required String email,
     required String password,
+    String? emailCode,
   }) async {
     submittedName = name;
     submittedPassword = password;

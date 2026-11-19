@@ -16,6 +16,7 @@ import { ApiError } from "../errors/api-error";
 import { AuthStorageError } from "../errors/auth";
 import type { User } from "../models/users";
 import type { DataEncryption } from "./data-encryption";
+import type { RefreshTokenService } from "./refresh-tokens";
 import type { AccessTokenService } from "./tokens";
 
 export const googleOAuthPath = "/api/auth/google";
@@ -34,6 +35,7 @@ interface GoogleOAuthOptions {
   pool: Pool;
   encryption: DataEncryption;
   tokens: AccessTokenService;
+  refreshTokens: RefreshTokenService;
   clientId: string;
   clientSecret: string;
   publicBaseUrl: string;
@@ -47,7 +49,7 @@ type RateLimitedResult = { status: "rate_limited"; retryAfterSeconds: number };
 type AttemptResult =
   | { status: "pending"; pollIntervalMs: number }
   | { status: "link_required"; attemptsRemaining: number; expiresAt: string; expiresInMs: number }
-  | { status: "complete"; user: User; token: string }
+  | { status: "complete"; user: User; token: string; refreshToken: string }
   | RateLimitedResult
   | TerminalAttemptResult;
 type LinkResult =
@@ -293,7 +295,7 @@ function createGoogleVerifier(clientId: string) {
 }
 
 export function createGoogleOAuthService(options: GoogleOAuthOptions) {
-  const { pool, encryption, tokens } = options;
+  const { pool, encryption, tokens, refreshTokens } = options;
   const configuration = parseConfiguration(options);
   const verifyIdentity = createGoogleVerifier(configuration.clientId);
 
@@ -598,7 +600,8 @@ export function createGoogleOAuthService(options: GoogleOAuthOptions) {
               await expireAttempt(client, attemptId);
               return { status: "expired" };
             }
-            return { status: "complete", user, token };
+            const refreshToken = await refreshTokens.issueWith(client, user.id);
+            return { status: "complete", user, token, refreshToken };
           }
           default: {
             const unreachable: never = attempt;

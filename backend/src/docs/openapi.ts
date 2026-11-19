@@ -45,6 +45,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
     ...(serverUrl ? { servers: [{ url: serverUrl }] } : {}),
     tags: [
       { name: "Auth" },
+      { name: "Google Auth", description: "Google sign-in using a one-time, app-polled handoff to the local JWT auth system" },
       { name: "Wallets", description: "Per-user wallet ownership and merchant setup" },
       { name: "Grants", description: "Payer spending approvals (bounded, revocable)" },
       { name: "Devices", description: "TOTP enrollment for the offline payer device" },
@@ -84,7 +85,8 @@ export function buildOpenApiSpec(serverUrl?: string) {
           properties: {
             message: { type: "string" },
             user: { $ref: "#/components/schemas/User" },
-            token: { type: "string", description: "Bearer token, valid 2 hours" },
+            token: { type: "string", description: "Bearer token, valid 15 minutes; renew with POST /api/auth/refresh" },
+            refreshToken: { type: "string", description: "Opaque rotating session token, valid 30 days; keep it private" },
           },
         },
         Approval: {
@@ -192,12 +194,12 @@ export function buildOpenApiSpec(serverUrl?: string) {
               "application/json": {
                 schema: {
                   type: "object",
-                  required: ["name", "email", "password"],
+                  required: ["name", "email", "password", "emailCode"],
                   properties: {
                     name: { type: "string", minLength: 2, maxLength: 80 },
                     email: { type: "string", format: "email" },
                     password: { type: "string", minLength: 8, description: "8+ characters, at most 72 bytes" },
-                    emailCode: { type: "string", pattern: "^[0-9]{6,10}$", description: "Required when email verification is enabled" },
+                    emailCode: { type: "string", pattern: "^[0-9]{6,10}$", description: "Code sent to this email using POST /api/auth/email-code" },
                   },
                 },
               },
@@ -206,85 +208,47 @@ export function buildOpenApiSpec(serverUrl?: string) {
           responses: {
             201: json({ $ref: "#/components/schemas/AuthResponse" }, "Created"),
             400: error("Invalid input"),
-            409: error("Email already registered or signup settings changed"),
+            409: error("Email already registered"),
             429: error("Too many attempts (5 per 15 minutes)"),
-            503: error("Email verification is required but unavailable"),
           },
-        },
-      },
-      "/api/auth/email-verification/status": {
-        get: {
-          tags: ["Auth"], summary: "Get the signup email verification policy",
-          description: "Availability reflects backend configuration, not verified email delivery.",
-          responses: { 200: json({ type: "object", required: ["required", "available"], properties: {
-            required: { type: "boolean" }, available: { type: "boolean" },
-          } }) },
         },
       },
       "/api/auth/email-code": {
         post: {
-          tags: ["Auth"], summary: "Send an email verification code",
+          tags: ["Auth"],
+          summary: "Send an email verification code for registration",
           requestBody: { required: true, content: { "application/json": { schema: {
             type: "object", required: ["email"], properties: { email: { type: "string", format: "email", maxLength: 254 } },
           } } } },
-          responses: { 202: json({ type: "object", properties: { message: { type: "string" } } }, "Code requested"),
-            400: error("Invalid email address"), 429: error("Too many requests"), 503: error("Email verification unavailable") },
+          responses: {
+            202: json({ type: "object", properties: { message: { type: "string", example: "Check your email for a verification code." } } }, "Verification email requested"),
+            400: error("Invalid email address"),
+            429: error("Email provider rate limit or too many requests (5 per 15 minutes)"),
+            503: error("Email verification is unavailable or not configured"),
+          },
         },
       },
       "/api/auth/google/status": {
-        get: { tags: ["Auth"], summary: "Check Google sign-in availability", responses: {
-          200: json({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }),
-        } },
+        get: { tags: ["Google Auth"], summary: "Check Google sign-in configuration availability", description: "Reports configuration only; it does not verify database, Google, or migration readiness. Returns enabled false when Google sign-in is unavailable.", responses: { 200: json({ type: "object", required: ["enabled"], properties: { enabled: { type: "boolean" } } }) } },
       },
       "/api/auth/google/attempts": {
-        post: { tags: ["Auth"], summary: "Start Google sign-in", description: "Open the returned URL in an external browser. Keep the poll secret private.", responses: {
-          201: json({ type: "object", required: ["attemptId", "pollSecret", "authorizationUrl", "expiresAt", "expiresInMs", "pollIntervalMs"], properties: {
-            attemptId: { type: "string", format: "uuid" }, pollSecret: { type: "string" }, authorizationUrl: { type: "string", format: "uri" },
-            expiresAt: { type: "string", format: "date-time" }, expiresInMs: { type: "integer" }, pollIntervalMs: { type: "integer" },
-          } }, "Attempt created"), 429: error("Too many requests"), 503: error("Google sign-in unavailable"),
-        } },
+        post: { tags: ["Google Auth"], summary: "Start Google sign-in", description: "Open the returned authorizationUrl in the system browser. Keep attemptId and pollSecret private to this app instance. No bearer token is required.", requestBody: { required: true, content: { "application/json": { schema: { type: "object", properties: {} } } } }, responses: {
+          201: json({ type: "object", required: ["attemptId", "pollSecret", "authorizationUrl", "expiresAt", "pollIntervalMs"], properties: { attemptId: { type: "string", format: "uuid" }, pollSecret: { type: "string", description: "Private handoff proof; do not expose in URLs or logs" }, authorizationUrl: { type: "string", format: "uri" }, expiresAt: { type: "string", format: "date-time" }, pollIntervalMs: { type: "integer", example: 2000 } } }, "Attempt created"),
+          429: error("Too many Google sign-in requests (10 per 15 minutes per IP bucket)"), 503: error("Google sign-in is unavailable") } },
       },
       "/api/auth/google/attempts/{attemptId}/consume": {
-        post: { tags: ["Auth"], summary: "Poll a Google sign-in attempt", parameters: [uuidParam("attemptId", "Attempt ID")],
-          requestBody: { required: true, content: { "application/json": { schema: {
-            type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string" } },
-          } } } },
-          responses: { 200: json({ type: "object", properties: {
-            status: { type: "string", enum: ["complete", "link_required", "cancelled", "expired", "consumed", "failed"] },
-            user: { $ref: "#/components/schemas/User" }, token: { type: "string" },
-            attemptsRemaining: { type: "integer" }, expiresAt: { type: "string", format: "date-time" },
-            expiresInMs: { type: "integer" }, code: { type: "string" },
-          } }),
-            202: json({ type: "object", properties: { status: { type: "string", enum: ["pending"] }, pollIntervalMs: { type: "integer" } } }, "Pending"),
-            400: error("Invalid attempt proof"), 404: error("Attempt unavailable"),
-            429: json({ type: "object" }, "Too many requests"), 503: error("Google sign-in unavailable") },
-        },
+        post: { tags: ["Google Auth"], summary: "Poll and consume a Google sign-in attempt", description: "Poll no faster than pollIntervalMs. A successful complete result returns a local JWT once; do not expect replay recovery.", parameters: [uuidParam("attemptId", "Attempt ID from start")], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string", description: "Secret returned by start" } } } } } }, responses: {
+          200: json({ type: "object", properties: { status: { type: "string", enum: ["complete", "link_required", "cancelled", "expired", "consumed", "failed"] }, user: { $ref: "#/components/schemas/User" }, token: { type: "string", description: "Local JWT, only on complete" }, attemptsRemaining: { type: "integer" }, expiresAt: { type: "string", format: "date-time" }, code: { type: "string" } } }, "Attempt result"),
+          202: json({ type: "object", required: ["status", "pollIntervalMs"], properties: { status: { type: "string", enum: ["pending"] }, pollIntervalMs: { type: "integer", example: 2000 } } }, "Attempt is pending; Retry-After is set"),
+          400: error("Malformed attempt proof"), 404: error("Attempt unavailable or poll secret incorrect"), 429: error("Consume poll budget exhausted; Retry-After is set"), 503: error("Google sign-in storage unavailable") } },
       },
       "/api/auth/google/attempts/{attemptId}/link": {
-        post: { tags: ["Auth"], summary: "Connect Google using the existing account password", parameters: [uuidParam("attemptId", "Attempt ID")],
-          requestBody: { required: true, content: { "application/json": { schema: {
-            type: "object", required: ["pollSecret", "password", "confirmLink"], properties: {
-              pollSecret: { type: "string" }, password: { type: "string" }, confirmLink: { type: "boolean", enum: [true] },
-            },
-          } } } },
-          responses: { 200: json({ type: "object", properties: { status: { type: "string", enum: ["ready"] } } }),
-            400: error("Invalid input"),
-            401: json({ type: "object", required: ["status", "attemptsRemaining"], properties: {
-              status: { type: "string", enum: ["invalid_password"] }, attemptsRemaining: { type: "integer" },
-            } }, "Password rejected"),
-            404: error("Attempt unavailable"), 409: json({ type: "object" }, "Link failed"),
-            410: json({ type: "object" }, "Attempt ended"),
-            429: json({ type: "object" }, "Too many requests"), 503: error("Google sign-in unavailable") },
-        },
+        post: { tags: ["Google Auth"], summary: "Connect Google to an existing account using password proof", description: "Only for a link_required attempt. This endpoint never returns a token; after ready, poll consume. Confirm explicitly.", parameters: [uuidParam("attemptId", "Attempt ID from start")], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["pollSecret", "password", "confirmLink"], properties: { pollSecret: { type: "string" }, password: { type: "string", minLength: 8, description: "Fresh local Atomic Commits password; at most 72 UTF-8 bytes" }, confirmLink: { type: "boolean", enum: [true] } } } } } }, responses: {
+          200: json({ type: "object", properties: { status: { type: "string", enum: ["ready"] } } }, "Password proof accepted; poll consume to retrieve the session"),
+          400: error("Malformed proof or GOOGLE_LINK_CONFIRMATION_REQUIRED"), 401: json({ type: "object", properties: { status: { type: "string", enum: ["invalid_password"] }, attemptsRemaining: { type: "integer" } } }, "Password proof rejected"), 409: json({ type: "object", properties: { status: { type: "string", enum: ["failed"] }, code: { type: "string", enum: ["link_attempts_exhausted", "link_conflict"] } } }, "Link failed or attempt is not awaiting linking"), 410: error("Attempt expired, cancelled, or consumed"), 429: error("Link rate limited; Retry-After is set"), 503: error("Google account linking unavailable") } },
       },
       "/api/auth/google/attempts/{attemptId}/cancel": {
-        post: { tags: ["Auth"], summary: "Cancel a Google sign-in attempt", parameters: [uuidParam("attemptId", "Attempt ID")],
-          requestBody: { required: true, content: { "application/json": { schema: {
-            type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string" } },
-          } } } },
-          responses: { 200: json({ type: "object", properties: { status: { type: "string" } } }),
-            400: error("Invalid attempt proof"), 404: error("Attempt unavailable"), 429: error("Too many requests"), 503: error("Google sign-in unavailable") },
-        },
+         post: { tags: ["Google Auth"], summary: "Cancel a Google sign-in attempt", parameters: [uuidParam("attemptId", "Attempt ID from start")], requestBody: { required: true, content: { "application/json": { schema: { type: "object", required: ["pollSecret"], properties: { pollSecret: { type: "string" } } } } } }, responses: { 200: json({ type: "object", properties: { status: { type: "string", enum: ["cancelled", "consumed", "expired", "failed"] } } }), 400: error("Malformed attempt proof"), 404: error("Attempt unavailable or poll secret incorrect"), 503: error("Google sign-in storage unavailable") } },
       },
       "/api/auth/login": {
         post: {
@@ -317,17 +281,70 @@ export function buildOpenApiSpec(serverUrl?: string) {
           responses: { 200: json({ type: "object", properties: { user: { $ref: "#/components/schemas/User" } } }), 401: error("Not logged in") },
         },
       },
+      "/api/auth/refresh": {
+        post: {
+          tags: ["Auth"],
+          summary: "Exchange a refresh token for a new token pair",
+          description: "Rotates the refresh token: the presented one is revoked and a new pair is returned. Reusing a rotated token revokes every session for that user.",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object", required: ["refreshToken"], properties: { refreshToken: { type: "string" } } } } },
+          },
+          responses: {
+            200: json({ $ref: "#/components/schemas/AuthResponse" }),
+            401: error("Refresh token invalid, expired, or already used"),
+            429: error("Too many attempts (30 per 15 minutes)"),
+            503: error("Sessions are not configured"),
+          },
+        },
+      },
       "/api/auth/logout": {
-        post: { tags: ["Auth"], summary: "Log out (client discards the token)", responses: { 200: json({ type: "object", properties: { message: { type: "string" } } }) } },
+        post: {
+          tags: ["Auth"],
+          summary: "Log out (revokes the refresh token in the body)",
+          requestBody: { required: false, content: { "application/json": { schema: { type: "object", properties: { refreshToken: { type: "string" } } } } } },
+          responses: { 200: json({ type: "object", properties: { message: { type: "string" } } }) },
+        },
       },
       "/api/wallet": {
         get: {
-          tags: ["Wallets"], summary: "Get the signed-in user's verified wallet", security: bearer,
+          tags: ["Wallets"], summary: "Get the signed-in user's default spending wallet (legacy API)", security: bearer,
           responses: { 200: json({ type: "object", properties: { wallet: { type: "object", nullable: true, properties: {
             address: { type: "string" }, publicName: { type: "string", nullable: true },
             assetCode: { type: "string" }, assetScale: { type: "integer" }, verifiedAt: { type: "string", format: "date-time" },
           } } } }), 401: error("Not logged in") },
         },
+      },
+      "/api/wallets": {
+        get: { tags: ["Wallets"], summary: "List verified wallets and their defaults", security: bearer,
+          responses: { 200: json({ type: "object", properties: { wallets: { type: "array", items: {
+            type: "object", properties: {
+              address: { type: "string" }, publicName: { type: "string", nullable: true },
+              assetCode: { type: "string" }, assetScale: { type: "integer" }, verifiedAt: { type: "string", format: "date-time" },
+              isDefaultSpending: { type: "boolean" }, isDefaultReceiving: { type: "boolean" },
+            },
+          } } } }), 401: error("Not logged in") } },
+      },
+      "/api/wallets/approvals": {
+        post: { tags: ["Wallets"], summary: "Start verification of an additional wallet", security: bearer,
+          description: "Complete the provider approval and poll the existing /api/wallet/approvals/{id} endpoint.",
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["walletAddress"], properties: { walletAddress: { type: "string" } },
+          } } } },
+          responses: { 202: json({ type: "object", properties: {
+            approvalId: { type: "string", format: "uuid" }, status: { type: "string" }, authorizationUrl: { type: "string" },
+          } }), 409: error("Wallet already linked"), 422: error("Wallet not found") } },
+      },
+      "/api/wallets/default": {
+        post: { tags: ["Wallets"], summary: "Choose a verified default wallet", security: bearer,
+          description: "Changing spending defaults does not change existing device grants. A receiving default updates an existing merchant destination atomically. Legacy payments pending at cutover block changes until manually resolved, including after they become terminal; terminal-at-cutover history does not block changes.",
+          requestBody: { required: true, content: { "application/json": { schema: {
+            type: "object", required: ["walletAddress", "purpose"], properties: {
+              walletAddress: { type: "string" }, purpose: { type: "string", enum: ["spending", "receiving"] },
+            },
+          } } } },
+          responses: { 200: json({ type: "object", properties: { wallets: { type: "array", items: { type: "object" } } } }),
+            400: error("Invalid input"), 404: error("Verified wallet not found"), 409: error("A legacy payment pending at cutover blocks a receiving destination change") } },
       },
       "/api/wallet/approvals": {
         post: {
@@ -357,7 +374,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
             merchantId: { type: "string", format: "uuid" }, displayName: { type: "string" },
             walletAddress: { type: "string" }, status: { type: "string" },
           } } } }), 401: error("Not logged in") } },
-        post: { tags: ["Wallets"], summary: "Activate merchant checkout using the caller's verified wallet", security: bearer,
+        post: { tags: ["Wallets"], summary: "Activate merchant checkout using the default receiving wallet", security: bearer,
           requestBody: { required: true, content: { "application/json": { schema: {
             type: "object", required: ["displayName"], properties: {
               displayName: { type: "string", minLength: 2, maxLength: 80 },
@@ -382,7 +399,9 @@ export function buildOpenApiSpec(serverUrl?: string) {
                 schema: {
                   type: "object",
                   properties: {
-                    walletAddress: { type: "string", description: "Optional; if supplied it must equal the caller's verified wallet." },
+                    walletAddress: { type: "string", description: "Optional; if supplied it must equal the caller's default spending wallet." },
+                    assetCode: { type: "string", description: "Reviewed spending asset code; supply together with assetScale. Omission is supported only for single-wallet legacy clients." },
+                    assetScale: { type: "integer", description: "Reviewed spending asset scale; must match verified metadata and the provider." },
                     cumulativeCap: { type: "string", example: "50000", description: "Total limit, payer minor units (default 50000)" },
                     perPaymentMaxDebit: { type: "string", example: "5000", description: "Per payment, payer minor units (default 5000)" },
                   },
@@ -396,6 +415,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
               "Approval started",
             ),
             400: error("Invalid input"),
+            409: error("WALLET_ASSET_CHANGED or WALLET_REQUIRED"),
             422: error("WALLET_NOT_FOUND"),
             502: error("PROVIDER_UNAVAILABLE"),
             503: error("NOT_CONFIGURED (PUBLIC_BASE_URL missing)"),
@@ -527,6 +547,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
                   properties: {
                     credentialType: { type: "string", enum: ["totp-v1"] },
                     paymentCode: { type: "string", example: "K7PQ3M-482916" },
+                    receivingWalletAddress: { type: "string", description: "Expected merchant destination. Required for new attempts when multiple wallets are linked; a changed default is rejected. Replays of new attempts must preserve whether the address was supplied and its value. For historical attempts of unknown request identity, omission is accepted and a supplied address must match the snapshot; a NULL snapshot cannot match." },
                     merchantReceive: { ...money, description: "What the merchant receives, in the merchant wallet's asset" },
                   },
                 },

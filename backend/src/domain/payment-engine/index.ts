@@ -18,3 +18,4 @@ export * from "./ports";
 export * from "./signed-offline-instruction";
 export * from "./offline-spending-policy";
 export * from "./offline-redemption";
+export * from "./payment-execution";

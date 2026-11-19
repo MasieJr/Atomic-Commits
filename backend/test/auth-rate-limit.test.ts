@@ -27,6 +27,7 @@ async function createFixture(t: TestContext) {
   const { app, close } = createApp({
     databaseUrl: 'postgresql://test:test@127.0.0.1:1/test',
     jwtSecret: 'auth-rate-limit-test-secret-at-least-32-characters',
+    emailVerification: { sendCode: async () => {}, verifyCode: async () => {} },
   });
   const server = app.listen(0, '127.0.0.1');
   t.after(async () => {
@@ -84,7 +85,7 @@ test('login throttles before token creation and bcrypt, then allows login after 
 
   // Exhausting login attempts does not exhaust the separate registration budget.
   assert.equal((await request('/api/auth/register', 'POST', {
-    name: user.name, ...credentials,
+    name: user.name, ...credentials, emailCode: '123456',
   })).status, 409);
 
   t.mock.timers.tick(15 * 60 * 1000 + 1);
@@ -95,14 +96,18 @@ test('login throttles before token creation and bcrypt, then allows login after 
     message: 'Login successful',
     user,
     token: (recovered.body as { token: string }).token,
+    refreshToken: (recovered.body as { refreshToken: string }).refreshToken,
   });
   assert.equal(typeof (recovered.body as { token?: unknown }).token, 'string');
+  assert.equal(typeof (recovered.body as { refreshToken?: unknown }).refreshToken, 'string');
   assert.equal(compare.mock.callCount(), 11);
 });
 
 test('registration throttles repeated attempts before hashing or accessing storage', async (t) => {
   const { request, hash, query, user } = await createFixture(t);
-  const registration = { name: user.name, email: user.email, password: 'test-password' };
+  const registration = {
+    name: user.name, email: user.email, password: 'test-password', emailCode: '123456',
+  };
 
   for (let attempt = 0; attempt < 5; attempt++) {
     assert.equal((await request('/api/auth/register', 'POST', registration)).status, 409);

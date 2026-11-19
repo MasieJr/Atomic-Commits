@@ -40,5 +40,9 @@ abstract final class AppTypography {
     color: AppColours.textSecondary,
   );
 
-  static const button = TextStyle(fontSize: 16, fontWeight: FontWeight.w600);
+  static const button = TextStyle(
+    fontFamily: 'Roboto',
+    fontSize: 16,
+    fontWeight: FontWeight.w600,
+  );
 }

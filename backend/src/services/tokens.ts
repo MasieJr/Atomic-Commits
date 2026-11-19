@@ -2,8 +2,8 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 /* only this alg is allowed - verify() rejects anything else the header claims */
 const jwtAlgorithm = "HS256";
-/* two hours, same life the cookie session used to get */
-const accessTokenTtlSeconds = 2 * 60 * 60;
+/* short-lived: clients silently renew through POST /auth/refresh */
+const accessTokenTtlSeconds = 15 * 60;
 
 function base64UrlEncode(data: Buffer | string): string {
   return Buffer.from(data).toString("base64url");

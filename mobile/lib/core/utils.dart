@@ -6,9 +6,7 @@ class Utils {
 
   String? validateName(String? raw) {
     final length = raw?.trim().runes.length ?? 0;
-    if (length < 2 || length > 80) {
-      return 'Use a name between 2 and 80 characters.';
-    }
+    if (length < 2 || length > 80) return 'Use a name between 2 and 80 characters.';
     return null;
   }
 
@@ -25,9 +23,7 @@ class Utils {
     final value = raw ?? '';
     if (value.isEmpty) return 'Enter a password.';
     if (value.length < 8) return 'Use at least 8 characters.';
-    if (utf8.encode(value).length > 72) {
-      return 'Use a password of at most 72 UTF-8 bytes.';
-    }
+    if (utf8.encode(value).length > 72) return 'Use a password of at most 72 UTF-8 bytes.';
     return null;
   }
 }

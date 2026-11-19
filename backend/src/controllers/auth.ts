@@ -2,10 +2,11 @@ import bcrypt from "bcrypt";
 import type { RequestHandler } from "express";
 
 import type { UserRepository } from "../models/users";
-import { ApiError } from "../errors/api-error";
 import { DuplicateEmailError } from "../errors/auth";
-import type { EmailVerificationPolicy } from "../services/email-verification";
 import type { AccessTokenService } from "../services/tokens";
+import type { EmailVerification } from "../services/email-verification";
+import type { RefreshTokenService } from "../services/refresh-tokens";
+import { ApiError } from "../errors/api-error";
 
 /* Precomputed at registration's cost so missing users still incur bcrypt work. */
 const dummyPasswordHash =
@@ -22,13 +23,18 @@ function requestBody(body: unknown): Record<string, unknown> {
 export function createAuthController(
   users: UserRepository,
   tokens: AccessTokenService,
-  emailPolicy: EmailVerificationPolicy = { kind: "disabled" },
+  emailVerification?: EmailVerification,
+  refreshTokens?: RefreshTokenService,
 ) {
-  const emailVerificationStatus: RequestHandler = (_req, res) => {
-    res.json({
-      required: emailPolicy.kind === "required",
-      available: emailPolicy.kind === "disabled" || emailPolicy.verifier !== undefined,
-    });
+  /* a missing refresh store must not block login itself - the session then
+     simply cannot outlive the access token */
+  const issueRefresh = async (userId: number): Promise<string | undefined> => {
+    if (!refreshTokens) return undefined;
+    try {
+      return await refreshTokens.issue(userId);
+    } catch {
+      return undefined;
+    }
   };
 
   const sendEmailCode: RequestHandler = async (req, res) => {
@@ -42,10 +48,8 @@ export function createAuthController(
       res.status(400).json({ error: "Enter a valid email address" });
       return;
     }
-    if (emailPolicy.kind !== "required" || !emailPolicy.verifier) {
-      throw new ApiError(503, "Email verification is not available.", "EMAIL_SERVICE_UNAVAILABLE");
-    }
-    await emailPolicy.verifier.sendCode(cleanEmail);
+    if (!emailVerification) throw new ApiError(503, "Email verification is not configured.", "EMAIL_SERVICE_UNAVAILABLE");
+    await emailVerification.sendCode(cleanEmail);
     res.status(202).json({ message: "Check your email for a verification code." });
   };
 
@@ -94,18 +98,12 @@ export function createAuthController(
       return;
     }
 
-    if (emailPolicy.kind === "required") {
-      if (!emailPolicy.verifier) {
-        throw new ApiError(503, "Email verification is not available.", "EMAIL_SERVICE_UNAVAILABLE");
-      }
-      if (typeof emailCode !== "string" || !/^[0-9]{6,10}$/.test(emailCode)) {
-        res.status(400).json({ error: "Enter the verification code sent to your email." });
-        return;
-      }
-      await emailPolicy.verifier.verifyCode(cleanEmail, emailCode);
-    } else if (emailCode !== undefined) {
-      throw new ApiError(409, "Signup settings changed. Please start again.", "EMAIL_POLICY_CHANGED");
+    if (!emailVerification) throw new ApiError(503, "Email verification is not configured.", "EMAIL_SERVICE_UNAVAILABLE");
+    if (typeof emailCode !== "string" || !/^[0-9]{6,10}$/.test(emailCode)) {
+      res.status(400).json({ error: "Enter the verification code sent to your email." });
+      return;
     }
+    await emailVerification.verifyCode(cleanEmail, emailCode);
 
     /* Store a salted hash instead of the password; 12 is bcrypt's work factor. */
     const passwordHash = await bcrypt.hash(password, 12);
@@ -124,11 +122,12 @@ export function createAuthController(
     }
 
     /* if we made it through all those catch blocks, we can let the user know we created the account */
-    /* sign them a fresh bearer token right away so registering logs you in */
+    /* sign them fresh bearer + refresh tokens right away so registering logs you in */
     res.status(201).json({
       message: "Account created successfully",
       user,
       token: tokens.sign(user.id),
+      refreshToken: await refreshTokens?.issue(user.id),
     });
   };
 
@@ -162,6 +161,39 @@ export function createAuthController(
       message: "Login successful",
       user: { id: user.id, name: user.name, email: user.email },
       token: tokens.sign(user.id),
+      refreshToken: await refreshTokens?.issue(user.id),
+    });
+  };
+
+  /* exchange a valid refresh token for a new token pair (rotation) */
+  const refresh: RequestHandler = async (req, res) => {
+    const { refreshToken } = requestBody(req.body);
+    if (typeof refreshToken !== "string" || !refreshToken) {
+      res.status(400).json({ error: "Please provide your session token" });
+      return;
+    }
+    if (!refreshTokens) {
+      res.status(503).json({ error: "Sessions are not configured yet." });
+      return;
+    }
+
+    const rotated = await refreshTokens.rotate(refreshToken);
+    if (!rotated) {
+      res.status(401).json({ error: "Your session has expired. Please log in again." });
+      return;
+    }
+
+    const user = await users.findById(rotated.userId);
+    if (!user) {
+      res.status(401).json({ error: "Your session has expired. Please log in again." });
+      return;
+    }
+
+    res.json({
+      message: "Session refreshed",
+      user,
+      token: tokens.sign(user.id),
+      refreshToken: rotated.token,
     });
   };
 
@@ -177,13 +209,17 @@ export function createAuthController(
     res.json({ user });
   };
 
-  /* jwt logout is client side - throw the token away, we have no server side
-  session to destroy until a token revocation mechanism exists */
-  const logout: RequestHandler = (_req, res) => {
+  /* logout only needs the refresh token to revoke it - the access token
+     expires on its own, and until revocation existed we had no server state */
+  const logout: RequestHandler = async (req, res) => {
+    const { refreshToken } = requestBody(req.body);
+    if (refreshTokens && typeof refreshToken === "string" && refreshToken) {
+      await refreshTokens.revoke(refreshToken);
+    }
     res.json({ message: "Logged out successfully" });
   };
 
-  return { emailVerificationStatus, sendEmailCode, register, login, me, logout };
+  return { sendEmailCode, register, login, refresh, me, logout };
 }
 
 export type AuthController = ReturnType<typeof createAuthController>;

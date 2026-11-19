@@ -24,7 +24,7 @@ The router uses the existing database pool, token service, and encryption instan
 
 `GET /api/auth/google/status` returns `{ "enabled": true }` or `{ "enabled": false }` with `Cache-Control: no-store`. The backend requires the explicit enable flag, valid configuration, a recorded `007_google_oauth.sql` migration, and the four expected tables. It caches this database check for five seconds. This does not verify Google connectivity or the correctness of the provider credentials. If any required condition is absent or the database check fails, Google endpoints return `503` and password login remains independent. Disable the Google button when unavailable. Do not fall back to unverified tokens or email-based linking.
 
-When Google is ready, the server schedules a separate non-overlapping `pruneAttempts()` pass every minute and stops its timer on shutdown. Each call clears at most 500 stale attempts, deletes at most 500 attempts expired for more than one day, and removes at most 500 expired windows from each of the IP and account link-limit tables. Multiple instances may run cleanup because rows use `SKIP LOCKED`. Monitor backlog and increase scheduling frequency if needed. Deadline and rate-limit checks do not depend on this timer.
+The server schedules a separate non-overlapping `pruneAttempts()` pass every minute and stops its timer on shutdown. Each call clears at most 500 stale attempts, deletes at most 500 attempts expired for more than one day, and removes at most 500 expired windows from each of the IP and account link-limit tables. Multiple instances may run cleanup because rows use `SKIP LOCKED`. Monitor backlog and increase scheduling frequency if needed. Deadline and rate-limit checks do not depend on this timer.
 
 The link service has shared Postgres IP, account, and per-attempt limits. Consume also has a shared per-attempt budget. The router's aggregate IP limits remain process-local. For multiple backend instances, configure shared or trusted-proxy aggregate limits before launch. Configure proxy trust narrowly because IP limits use Express's `req.ip`, not a body parameter. Do not trust arbitrary client-forwarded IP headers.
 
@@ -192,4 +192,3 @@ Authoritative references:
 - [Google OpenID Connect server flow and ID-token validation](https://developers.google.com/identity/openid-connect/openid-connect)
 - [Google discovery metadata](https://accounts.google.com/.well-known/openid-configuration)
 - [Google OAuth policies, including secure browsers](https://developers.google.com/identity/protocols/oauth2/policies#secure-browsers)
-- [Google sign-in branding guidelines](https://developers.google.com/identity/branding-guidelines). The bundled Google mark is the logo published on that page.

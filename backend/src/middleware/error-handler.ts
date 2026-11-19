@@ -30,6 +30,6 @@ export const errorHandler: ErrorRequestHandler = (error: unknown, _req, res, nex
     }
   }
 
-  console.error('An API request failed.');
+  console.error('An API request failed.', error);
   res.status(500).json({ error: 'A server error occurred. Please try again.' });
 };
