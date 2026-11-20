@@ -194,20 +194,32 @@ export function createApp(options: AppOptions = {}) {
       res.status(503).json({ error: "Google sign-in is not configured yet." });
     });
   }
+  let emailVerification = options.emailVerification;
+  if (!emailVerification) {
+    try {
+      if (options.supabaseUrl && options.supabasePublishableKey) {
+        emailVerification = createSupabaseEmailVerification(options.supabaseUrl, options.supabasePublishableKey);
+      }
+    } catch {
+      emailVerification = undefined;
+    }
+  }
+  app.get("/api/auth/email-verification/status", async (_req, res) => {
+    let available = false;
+    if (pool && tokens && emailVerification) {
+      try {
+        await pool.query("SELECT 1 FROM app_private.users LIMIT 0");
+        available = true;
+      } catch {
+        // Signup cannot complete without its local user store.
+      }
+    }
+    res.json({ required: true, available });
+  });
   app.use("/api/auth", createAuthRateLimiter());
 
   if (pool && tokens) {
     const users = createUserRepository(pool);
-    let emailVerification = options.emailVerification;
-    if (!emailVerification) {
-      try {
-        if (options.supabaseUrl && options.supabasePublishableKey) {
-          emailVerification = createSupabaseEmailVerification(options.supabaseUrl, options.supabasePublishableKey);
-        }
-      } catch {
-        emailVerification = undefined;
-      }
-    }
     const controller = createAuthController(users, tokens, emailVerification, refreshTokens);
     app.use("/api/auth", createAuthRouter(controller, tokens));
 

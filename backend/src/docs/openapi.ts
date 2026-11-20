@@ -86,7 +86,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
             message: { type: "string" },
             user: { $ref: "#/components/schemas/User" },
             token: { type: "string", description: "Bearer token, valid 15 minutes; renew with POST /api/auth/refresh" },
-            refreshToken: { type: "string", description: "Opaque rotating session token, valid 30 days; keep it private" },
+            refreshToken: { type: "string", description: "Opaque rotating session token, valid 30 days; omitted if session storage is unavailable. Keep it private." },
           },
         },
         Approval: {
@@ -184,6 +184,9 @@ export function buildOpenApiSpec(serverUrl?: string) {
       "/health": {
         get: { tags: ["Health"], summary: "Liveness check", responses: { 200: json({ type: "object", properties: { status: { type: "string", example: "ok" } } }) } },
       },
+      "/api/auth/email-verification/status": {
+        get: { tags: ["Auth"], summary: "Check email signup availability", description: "Verification is always required. Availability checks configuration and local user storage, not email provider health or delivery; subsequent requests can still fail.", responses: { 200: json({ type: "object", required: ["required", "available"], properties: { required: { type: "boolean", enum: [true] }, available: { type: "boolean" } } }) } },
+      },
       "/api/auth/register": {
         post: {
           tags: ["Auth"],
@@ -210,6 +213,7 @@ export function buildOpenApiSpec(serverUrl?: string) {
             400: error("Invalid input"),
             409: error("Email already registered"),
             429: error("Too many attempts (5 per 15 minutes)"),
+            503: error("Email verification or authentication storage is unavailable"),
           },
         },
       },

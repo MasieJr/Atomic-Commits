@@ -21,6 +21,7 @@ async function serve(t: TestContext, publicBaseUrl?: string) {
 /* every public route must be documented; update both together */
 const ROUTES = [
   ['get', '/health'],
+  ['get', '/api/auth/email-verification/status'],
   ['post', '/api/auth/register'],
   ['post', '/api/auth/email-code'],
   ['post', '/api/auth/login'],

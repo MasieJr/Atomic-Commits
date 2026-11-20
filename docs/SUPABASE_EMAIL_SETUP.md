@@ -59,6 +59,13 @@ when Supabase is unavailable or unconfigured; do not bypass verification or
 fall back to creating an unverified account. Existing local password logins
 remain supported and do not require Supabase email verification.
 
+`GET /api/auth/email-verification/status` always returns `required: true`.
+Its `available` flag checks backend configuration and access to the local user
+table, not Supabase health or email delivery. A later request can still fail;
+clients must handle those errors and must not skip verification. If refresh-token
+storage fails during registration or login, the response contains an access
+token but no refresh token; the user must sign in again when it expires.
+
 The backend accepts verification only when Supabase returns a successful session
 with a nonempty access token and user ID, a confirmed email, and an email matching
 the requested normalized address. Check this response contract and one-time OTP

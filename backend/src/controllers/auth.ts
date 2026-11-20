@@ -127,7 +127,7 @@ export function createAuthController(
       message: "Account created successfully",
       user,
       token: tokens.sign(user.id),
-      refreshToken: await refreshTokens?.issue(user.id),
+      refreshToken: await issueRefresh(user.id),
     });
   };
 
@@ -161,7 +161,7 @@ export function createAuthController(
       message: "Login successful",
       user: { id: user.id, name: user.name, email: user.email },
       token: tokens.sign(user.id),
-      refreshToken: await refreshTokens?.issue(user.id),
+      refreshToken: await issueRefresh(user.id),
     });
   };
 
