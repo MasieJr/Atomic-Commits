@@ -8,6 +8,7 @@ import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/merchant/screens/scan_qr_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -265,6 +266,19 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     }
   }
 
+  Future<void> _scanCode() async {
+    if (!_currentOwner || !_ready || _busy || _unknownSubmission || _payment != null) return;
+    final code = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const ScanQrScreen()),
+    );
+    if (_currentOwner && _ready && !_busy && !_unknownSubmission && _payment == null && code != null) {
+      setState(() {
+        _code.text = code;
+        _message = null;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final wallet = _wallet;
@@ -404,6 +418,12 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                             null
                         ? 'Enter a positive amount with the correct decimal places.'
                         : null,
+                  ),
+                  const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _scanCode,
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('Scan QR code'),
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
