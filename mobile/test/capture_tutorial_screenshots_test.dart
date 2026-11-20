@@ -156,7 +156,6 @@ void main() {
     await _pumpWallet(tester);
     await _warmAssets(tester, [
       'assets/images/wallet_tutorial/signup-fields.png',
-      'assets/images/wallet_tutorial/signup-filled.png',
       'assets/images/wallet_tutorial/dashboard-account.png',
       'assets/images/wallet_tutorial/wallet-address-list.png',
     ]);
@@ -167,8 +166,9 @@ void main() {
 
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();
-    expect(find.text('Use the tutorial email'), findsOneWidget);
-    await _save('step-2-tutorial-email');
+    expect(find.text('Use your own email'), findsOneWidget);
+    expect(find.textContaining('email address you can access'), findsOneWidget);
+    expect(find.textContaining('dummyinbox.com'), findsNothing);
 
     await tester.tap(find.text('Next'));
     await tester.pumpAndSettle();

@@ -2,7 +2,7 @@
 
 A short walkthrough from a fresh sign-up to a working `$ilp` wallet address you can connect in the app. Red boxes mark the fields and controls to use.
 
-You need an inbox you can read and about 10 minutes. In this sandbox only the email address has to be real — every other field can be fake.
+You need an email inbox you control and can access, plus about 10 minutes. Use your own unique password. This is a sandbox wallet, but the email must be yours so you can receive the verification link.
 
 ## 1. Navigate and fill in
 
@@ -10,11 +10,9 @@ Go to <https://wallet.interledger-test.dev> and fill in the sign-up form. Enter 
 
 <img src="images/wallet-tutorial/signup-fields.png" alt="Sign-up form with email and password fields highlighted" width="360">
 
-## 2. Use the tutorial email
+## 2. Use your own email
 
-Fill in the email address shown in this tutorial (`h85h7x8s648q3fwg@dummyinbox.com`) and a password of at least 8 characters, then select the submit arrow:
-
-<img src="images/wallet-tutorial/signup-filled.png" alt="Sign-up form filled with tutorial email, submit button highlighted" width="360">
+Enter **your own email address**, one whose inbox you can open to receive a verification message. Create a password of at least 8 characters and select the submit arrow. **Do not copy an email address from a screenshot or use somebody else's inbox.**
 
 ## 3. Open your account
 

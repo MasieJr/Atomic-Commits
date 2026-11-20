@@ -45,12 +45,12 @@ const _createSteps = [
     image: 'assets/images/wallet_tutorial/signup-fields.png',
   ),
   _TutorialStep(
-    title: 'Use the tutorial email',
+    title: 'Use your own email',
     body:
-        'Fill in the email address shown in this tutorial '
-        '(h85h7x8s648q3fwg@dummyinbox.com) and a password of at least '
-        '8 characters, then select the submit arrow.',
-    image: 'assets/images/wallet_tutorial/signup-filled.png',
+        'Enter an email address you can access so you can receive the '
+        'verification message. Create your own password and submit the '
+        'form. Do not copy an email address from a screenshot.',
+    icon: Icons.alternate_email,
   ),
   _TutorialStep(
     title: 'Open your account',
