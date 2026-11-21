@@ -2,12 +2,14 @@
  * TOTP payment code — pure generator/verifier.
  *
  * - The API contract is RFC 6238 HMAC-SHA1 with six decimal digits and a
- *   30-second step. The explicitly named base36 helpers support the older
- *   local-only demo and are not compatible with API redemption.
+ *   30-second step by default; an optional `periodMs` selects a different
+ *   epochal rotation (e.g. 1 800 000 for a 30-minute long code). The
+ *   explicitly named base36 helpers support the older local-only demo and
+ *   are not compatible with API redemption.
  * - No database, no network, no internal clock: `atEpochMs` is injected on
  *   every call as a non-negative safe-integer number of epoch milliseconds.
  *   `expiresAtEpochMs` is the exact step-aligned instant
- *   (timeStep + 1) * 30 000.
+ *   (timeStep + 1) * periodMs.
  *
  * SECRETS — canonical RFC 4648 Base32, case-insensitive:
  * - [A-Z2-7] with an optional single trailing '=' run padding the string to
@@ -45,8 +47,10 @@
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-/** Fixed demo window: codes rotate every 30 seconds; expiry is step-aligned. */
+/** Default demo window: codes rotate every 30 seconds; expiry is step-aligned. */
 export const TOTP_TIME_STEP_MS = 30_000;
+/** Optional long window: one code stays current for 30 minutes (step-aligned). */
+export const TOTP_LONG_TIME_STEP_MS = 1_800_000;
 
 export type TotpGeneration = {
   readonly code: string;
@@ -62,7 +66,7 @@ const CODE_LENGTH = 6;
 /** RFC 6238 recommends seeds of at least 128 bits. */
 const MIN_SECRET_BYTES = 16;
 /** The backend contract allows the current step plus at most one adjacent. */
-const MAX_ALLOWED_DRIFT_STEPS = 1;
+export const MAX_ALLOWED_DRIFT_STEPS = 1;
 
 const BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 /**
@@ -88,6 +92,7 @@ const DECIMAL_PAYMENT_CODE_PATTERN = /^([A-Z0-9]{4,12})-([0-9]{6})$(?![\s\S])/;
 const INVALID_TOTP_TIME = "TOTP time must be a non-negative whole number of milliseconds.";
 const INVALID_TOTP_SECRET = "TOTP secret is missing, malformed, or below the strength floor.";
 const INVALID_TOTP_DRIFT = "TOTP drift window is outside the supported 0..1 adjacent-step range.";
+const INVALID_TOTP_PERIOD = "TOTP period must be a positive whole number of milliseconds.";
 const INVALID_PAYMENT_CODE_PREFIX = "Payment code prefix must be four uppercase A-Z/0-9 characters.";
 const INVALID_PAYMENT_CODE_BODY = "Payment code must be six uppercase A-Z/0-9 characters.";
 
@@ -106,6 +111,21 @@ function assertValidAtEpochMs(atEpochMs: number): number {
     throw new Error(INVALID_TOTP_TIME);
   }
   return atEpochMs;
+}
+
+/**
+ * Caller-supplied rotation period (whole ms). Construction throws on bad
+ * values; verification fails closed (see verifyCode).
+ */
+function assertValidPeriodMs(periodMs: number): number {
+  if (
+    typeof periodMs !== "number" ||
+    !Number.isSafeInteger(periodMs) ||
+    periodMs <= 0
+  ) {
+    throw new Error(INVALID_TOTP_PERIOD);
+  }
+  return periodMs;
 }
 
 function hasCanonicalBase32Length(letterCount: number): boolean {
@@ -202,21 +222,28 @@ function isCode(code: unknown): code is string {
 }
 
 /**
- * Generate the TOTP for `atEpochMs`: the code for the time step containing
- * that instant, plus the step number and the exact epoch millisecond when
- * the code stops being current ((step + 1) * 30 000).
+ * Generate the TOTP for `atEpochMs` with rotation `periodMs` (default 30s):
+ * the code for the time step containing that instant, plus the step number
+ * and the exact epoch millisecond when the code stops being current
+ * ((step + 1) * periodMs).
  *
- * Throws a generic Error on malformed secret or malformed time; safe inputs
- * always produce a well-formed six-character alphanumeric code.
+ * Throws a generic Error on malformed secret, malformed time, or malformed
+ * period; safe inputs always produce a well-formed six-character
+ * alphanumeric code.
  */
-export function generateBase36Totp(secret: string, atEpochMs: number): TotpGeneration {
+export function generateBase36Totp(
+  secret: string,
+  atEpochMs: number,
+  periodMs: number = TOTP_TIME_STEP_MS,
+): TotpGeneration {
   const time = assertValidAtEpochMs(atEpochMs);
+  const period = assertValidPeriodMs(periodMs);
   const key = decodeBase32Secret(secret);
   if (key === null) {
     throw new Error(INVALID_TOTP_SECRET);
   }
-  const timeStep = Math.floor(time / TOTP_TIME_STEP_MS);
-  const expiresAtEpochMs = (timeStep + 1) * TOTP_TIME_STEP_MS;
+  const timeStep = Math.floor(time / period);
+  const expiresAtEpochMs = (timeStep + 1) * period;
   if (!Number.isSafeInteger(expiresAtEpochMs)) throw new Error(INVALID_TOTP_TIME);
   return {
     code: hotpBase36(key, BigInt(timeStep)),
@@ -226,15 +253,49 @@ export function generateBase36Totp(secret: string, atEpochMs: number): TotpGener
 }
 
 /** RFC 6238 decimal presentation used by the current API branch. */
-export function generateDecimalTotp(secret: string, atEpochMs: number): TotpGeneration {
-  const generated = generateBase36Totp(secret, atEpochMs);
+export function generateDecimalTotp(
+  secret: string,
+  atEpochMs: number,
+  periodMs: number = TOTP_TIME_STEP_MS,
+): TotpGeneration {
+  const generated = generateBase36Totp(secret, atEpochMs, periodMs);
   const truncated = Number.parseInt(generated.code, 36);
   return { ...generated, code: String(truncated % 1_000_000).padStart(6, "0") };
 }
 
 /** Default exports retain the backend's established decimal TOTP contract. */
-export function generateTotp(secret: string, atEpochMs: number): TotpGeneration {
-  return generateDecimalTotp(secret, atEpochMs);
+export function generateTotp(
+  secret: string,
+  atEpochMs: number,
+  periodMs: number = TOTP_TIME_STEP_MS,
+): TotpGeneration {
+  return generateDecimalTotp(secret, atEpochMs, periodMs);
+}
+
+/**
+ * Verify against both supported rotations without any period metadata on the
+ * wire: first the default 30-second step (with the caller's drift), then the
+ * 30-minute long step with drift 0 (a long code lives exactly one bucket).
+ * First match wins so short codes keep their existing claim semantics when
+ * both could theoretically collide.
+ */
+export function verifyAnySupportedTotpPeriod(
+  secret: string,
+  code: unknown,
+  atEpochMs: number,
+  allowedDriftSteps: number,
+):
+  | { readonly valid: true; readonly timeStep: number; readonly periodMs: number }
+  | { readonly valid: false } {
+  const short = verifyTotp(secret, code, atEpochMs, allowedDriftSteps, TOTP_TIME_STEP_MS);
+  if (short.valid) {
+    return { valid: true, timeStep: short.timeStep, periodMs: TOTP_TIME_STEP_MS };
+  }
+  const long = verifyTotp(secret, code, atEpochMs, 0, TOTP_LONG_TIME_STEP_MS);
+  if (long.valid) {
+    return { valid: true, timeStep: long.timeStep, periodMs: TOTP_LONG_TIME_STEP_MS };
+  }
+  return { valid: false };
 }
 
 /**
@@ -259,8 +320,9 @@ export function verifyTotp(
   code: unknown,
   atEpochMs: number,
   allowedDriftSteps: number,
+  periodMs: number = TOTP_TIME_STEP_MS,
 ): TotpVerification {
-  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "decimal");
+  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "decimal", periodMs);
 }
 
 /** The legacy alphanumeric verifier is only for local-demo profiles. */
@@ -269,8 +331,9 @@ export function verifyBase36Totp(
   code: unknown,
   atEpochMs: number,
   allowedDriftSteps: number,
+  periodMs: number = TOTP_TIME_STEP_MS,
 ): TotpVerification {
-  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "base36");
+  return verifyCode(secret, code, atEpochMs, allowedDriftSteps, "base36", periodMs);
 }
 
 function verifyCode(
@@ -279,6 +342,7 @@ function verifyCode(
   atEpochMs: number,
   allowedDriftSteps: number,
   encoding: "decimal" | "base36",
+  periodMs: number = TOTP_TIME_STEP_MS,
 ): TotpVerification {
   if (
     typeof allowedDriftSteps !== "number" ||
@@ -287,6 +351,14 @@ function verifyCode(
     allowedDriftSteps > MAX_ALLOWED_DRIFT_STEPS
   ) {
     throw new Error(INVALID_TOTP_DRIFT);
+  }
+  if (
+    typeof periodMs !== "number" ||
+    !Number.isSafeInteger(periodMs) ||
+    periodMs <= 0
+  ) {
+    // Caller configuration (like drift): throw rather than silently default.
+    throw new Error(INVALID_TOTP_PERIOD);
   }
   const key = decodeBase32Secret(secret);
   if (key === null) return { valid: false };
@@ -302,7 +374,7 @@ function verifyCode(
   }
 
   const provided = Buffer.from(code as string, "utf8");
-  const timeStep = Math.floor(atEpochMs / TOTP_TIME_STEP_MS);
+  const timeStep = Math.floor(atEpochMs / periodMs);
   const stepOffsets: readonly number[] =
     allowedDriftSteps === 0 ? [0] : [0, -1, 1];
   for (const offset of stepOffsets) {

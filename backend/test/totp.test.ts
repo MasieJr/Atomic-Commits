@@ -5,7 +5,9 @@ import {
   formatBase36PaymentCode as formatPaymentCode,
   generateBase36Totp as generateTotp,
   parseBase36PaymentCode as parsePaymentCode,
+  TOTP_LONG_TIME_STEP_MS,
   TOTP_TIME_STEP_MS,
+  verifyAnySupportedTotpPeriod,
   verifyBase36Totp as verifyTotp,
   formatPaymentCode as formatApiPaymentCode,
   generateTotp as generateApiTotp,
@@ -142,4 +144,143 @@ test('separate time steps can collide and require durable backend replay protect
   assert.equal(first.code, 'TOWFNA');
   assert.equal(second.code, first.code);
   assert.deepEqual(verifyTotp(RFC_SEED, first.code, 56_758 * TOTP_TIME_STEP_MS, 0), { valid: true, timeStep: 56_758 });
+});
+
+test('optional periodMs selects an epochal 30-minute rotation', () => {
+  assert.equal(TOTP_LONG_TIME_STEP_MS, 1_800_000);
+  // Default remains 30s.
+  assert.equal(generateApiTotp(RFC_SEED, 59_000).timeStep, Math.floor(59_000 / TOTP_TIME_STEP_MS));
+  // Long period: stable across the whole bucket, rotates at the boundary.
+  const longAtStart = generateApiTotp(RFC_SEED, 0, TOTP_LONG_TIME_STEP_MS);
+  const longMid = generateApiTotp(RFC_SEED, 900_000, TOTP_LONG_TIME_STEP_MS);
+  const longEnd = generateApiTotp(RFC_SEED, 1_799_999, TOTP_LONG_TIME_STEP_MS);
+  assert.deepEqual(longAtStart, {
+    code: longMid.code,
+    timeStep: 0,
+    expiresAtEpochMs: TOTP_LONG_TIME_STEP_MS,
+  });
+  assert.deepEqual(longEnd, longAtStart);
+  const longNext = generateApiTotp(RFC_SEED, TOTP_LONG_TIME_STEP_MS, TOTP_LONG_TIME_STEP_MS);
+  assert.equal(longNext.timeStep, 1);
+  assert.equal(longNext.expiresAtEpochMs, 2 * TOTP_LONG_TIME_STEP_MS);
+  assert.notEqual(longNext.code, longAtStart.code);
+  // Same instant, different periods → different steps (and usually codes).
+  assert.equal(generateApiTotp(RFC_SEED, 60_000).timeStep, 2);
+  assert.equal(generateApiTotp(RFC_SEED, 60_000, TOTP_LONG_TIME_STEP_MS).timeStep, 0);
+});
+
+test('long codes verify only inside their own 30-minute step at drift 0', () => {
+  const issued = generateApiTotp(RFC_SEED, 0, TOTP_LONG_TIME_STEP_MS);
+  // Age matrix at step boundaries (issue at T=0).
+  for (const ageMs of [60_000, 120_000, 180_000, 900_000]) {
+    assert.deepEqual(
+      verifyApiTotp(RFC_SEED, issued.code, ageMs, 0, TOTP_LONG_TIME_STEP_MS),
+      { valid: true, timeStep: 0 },
+      `age ${ageMs}`,
+    );
+    // Same code under the default 30s period must not match the long step.
+    assert.deepEqual(
+      verifyApiTotp(RFC_SEED, issued.code, ageMs, 0),
+      { valid: false },
+      `default period age ${ageMs}`,
+    );
+  }
+  // One step late: invalid at drift 0.
+  assert.deepEqual(
+    verifyApiTotp(RFC_SEED, issued.code, TOTP_LONG_TIME_STEP_MS, 0, TOTP_LONG_TIME_STEP_MS),
+    { valid: false },
+  );
+  // Adjacent-step drift still works when the caller asks for it.
+  assert.deepEqual(
+    verifyApiTotp(RFC_SEED, issued.code, TOTP_LONG_TIME_STEP_MS, 1, TOTP_LONG_TIME_STEP_MS),
+    { valid: true, timeStep: 0 },
+  );
+  // A 30s-period code does not verify under the long period.
+  const short = generateApiTotp(RFC_SEED, 30_000);
+  assert.deepEqual(verifyApiTotp(RFC_SEED, short.code, 30_000, 0, TOTP_LONG_TIME_STEP_MS), { valid: false });
+});
+
+test('malformed periodMs throws on generate and fails closed on verify', () => {
+  for (const period of [0, -1, 1.5, NaN, Infinity, '30000', null]) {
+    assert.throws(() => generateApiTotp(RFC_SEED, 0, period as number), /period/);
+    assert.throws(() => verifyApiTotp(RFC_SEED, '287082', 0, 0, period as number), /period/);
+  }
+});
+
+test('verifyAnySupportedTotpPeriod dual-tries 30s then 30m without wire metadata', () => {
+  // Short code at drift 1 still resolves as 30s.
+  const short = generateApiTotp(RFC_SEED, 60_000);
+  assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, short.code, 60_000, 1), {
+    valid: true,
+    timeStep: short.timeStep,
+    periodMs: TOTP_TIME_STEP_MS,
+  });
+  // Long code from long step 1 (epoch base avoids the step-0 short/long counter
+  // collision at t=0, where both periods share HOTP counter 0).
+  const base = TOTP_LONG_TIME_STEP_MS;
+  const long = generateApiTotp(RFC_SEED, base, TOTP_LONG_TIME_STEP_MS);
+  assert.equal(long.timeStep, 1);
+  for (const ageMs of [0, 60_000, 900_000, 1_799_999]) {
+    assert.deepEqual(
+      verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + ageMs, 1),
+      { valid: true, timeStep: 1, periodMs: TOTP_LONG_TIME_STEP_MS },
+      `age ${ageMs}`,
+    );
+  }
+  // Past the long bucket: neither period accepts (long has drift 0).
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + TOTP_LONG_TIME_STEP_MS, 1),
+    { valid: false },
+  );
+  // Garbage fails closed.
+  assert.deepEqual(verifyAnySupportedTotpPeriod(RFC_SEED, '000000', 0, 1), { valid: false });
+});
+
+test('age matrix: long code lives +1m/+4m/+5m/+10m/+15m and dies at +31m; short accepts +10s/+45s, dies at +75s', () => {
+  /* Long code issued on a step boundary (long step 1; base avoids the t=0 collision). */
+  const base = TOTP_LONG_TIME_STEP_MS;
+  const long = generateApiTotp(RFC_SEED, base, TOTP_LONG_TIME_STEP_MS);
+  assert.equal(long.timeStep, 1);
+  for (const ageMs of [
+    60_000, // +1m
+    240_000, // +4m
+    300_000, // +5m
+    600_000, // +10m
+    900_000, // +15m
+  ]) {
+    assert.deepEqual(
+      verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + ageMs, 1),
+      { valid: true, timeStep: 1, periodMs: TOTP_LONG_TIME_STEP_MS },
+      `long +${ageMs / 60_000}m`,
+    );
+  }
+  // Exactly one long step late is already out; +31m is past the single bucket.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, long.code, base + 31 * 60_000, 1),
+    { valid: false },
+    'long +31m',
+  );
+
+  /* Short code issued on a 30s step boundary (step 2). */
+  const shortBase = 60_000;
+  const short = generateApiTotp(RFC_SEED, shortBase);
+  assert.equal(short.timeStep, 2);
+  // +10s: still inside the issue step.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 10_000, 1),
+    { valid: true, timeStep: 2, periodMs: TOTP_TIME_STEP_MS },
+    'short +10s',
+  );
+  // +45s: next step; short drift 1 still accepts the issue step.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 45_000, 1),
+    { valid: true, timeStep: 2, periodMs: TOTP_TIME_STEP_MS },
+    'short +45s',
+  );
+  // +75s: two steps later; short drift 1 and long drift 0 both refuse.
+  assert.deepEqual(
+    verifyAnySupportedTotpPeriod(RFC_SEED, short.code, shortBase + 75_000, 1),
+    { valid: false },
+    'short +75s',
+  );
 });

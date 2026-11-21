@@ -59,6 +59,8 @@ interface AppOptions {
   log?: LogEvent;
   /* TOTP tolerance: 0 = strict 30 s window, 1 = also adjacent windows (default) */
   allowedDriftSteps?: 0 | 1;
+  /* Allows tests to freeze redemption verification time. */
+  redemptionNow?: () => number;
 }
 
 /* register the express app */
@@ -256,6 +258,7 @@ export function createApp(options: AppOptions = {}) {
         confirmPollMs: options.confirmPollMs,
         log: options.log ?? logEvent,
         allowedDriftSteps: options.allowedDriftSteps,
+        now: options.redemptionNow,
       });
       grants = createPaymentGrantService({ pool, authorities, provider, availableKeyVersions: [...keyring.keys.keys()], log: options.log ?? logEvent });
       const approvals = createPaymentGrantApprovalService({

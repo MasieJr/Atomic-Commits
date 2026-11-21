@@ -8,6 +8,7 @@ import 'package:atomic_commits/core/network/api_endpoints.dart';
 import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/payer/device_settings_sheet.dart';
 import 'package:atomic_commits/features/wallet/wallet_cache.dart';
 import 'package:atomic_commits/features/wallet/screens/wallet_tutorial_sheet.dart';
 import 'package:crypto/crypto.dart';
@@ -201,11 +202,12 @@ class _WalletScreenState extends State<WalletScreen>
       if (accountCurrent() && await _rejectAuthorization(error)) return;
       if (!current()) return;
       Map<String, dynamic>? cached;
-      if (!_authorizationRejected && error is DioException && error.response == null &&
+      final disconnected = error is DioException && error.response == null &&
           (error.type == DioExceptionType.connectionError ||
            error.type == DioExceptionType.connectionTimeout ||
            error.type == DioExceptionType.receiveTimeout ||
-           error.type == DioExceptionType.sendTimeout)) {
+           error.type == DioExceptionType.sendTimeout);
+      if (!_authorizationRejected && disconnected) {
         try {
           cached = await WalletCache.read(origin: origin, userId: _ownerId, isCurrent: current);
         } catch (_) {
@@ -216,7 +218,7 @@ class _WalletScreenState extends State<WalletScreen>
       setState(() {
         _loading = false;
         _walletAvailable = cached != null;
-        _offline = cached != null;
+        _offline = disconnected;
         if (cached != null) {
           _wallet = cached['wallet'] as Map<String, dynamic>?;
           _wallets = cached['wallets'] as List<Map<String, dynamic>>;
@@ -550,18 +552,40 @@ class _WalletScreenState extends State<WalletScreen>
           padding: const EdgeInsets.all(AppSpacing.screenPadding),
           children: [
             const SizedBox(height: 12),
-            Text(
-              'Wallets',
-              style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                color: AppColours.ink,
-                fontWeight: FontWeight.w800,
-              ),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Wallets',
+                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                      color: AppColours.ink,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                OutlinedButton.icon(
+                  style: OutlinedButton.styleFrom(minimumSize: const Size(0, 44)),
+                  onPressed: _busy || _offline ||
+                          getIt<AuthController>().user?.id != _ownerId
+                      ? null
+                      : () => showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          backgroundColor: Colors.transparent,
+                          builder: (_) => DeviceSettingsSheet(ownerId: _ownerId),
+                        ),
+                  icon: const Icon(Icons.phonelink_setup_outlined),
+                  label: const Text('Devices'),
+                ),
+              ],
             ),
             const SizedBox(height: 24),
             if (_offline)
               Padding(
                 padding: const EdgeInsets.only(bottom: 16),
-                child: Text('Offline — cached data may be stale. Last synced: $_syncedAt. Actions are disabled until refreshed online.'),
+                child: Text(_walletAvailable
+                    ? 'Offline — cached data may be stale. Last synced: $_syncedAt. Actions are disabled until refreshed online.'
+                    : 'Offline — actions are disabled until refreshed online.'),
               ),
             if (_loading)
               const Center(child: CircularProgressIndicator())

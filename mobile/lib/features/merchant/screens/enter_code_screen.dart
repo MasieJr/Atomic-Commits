@@ -8,6 +8,7 @@ import 'package:atomic_commits/core/money.dart';
 import 'package:atomic_commits/core/network/api_client.dart';
 import 'package:atomic_commits/features/activity/models/payment_model.dart';
 import 'package:atomic_commits/features/auth/auth_controller.dart';
+import 'package:atomic_commits/features/merchant/screens/scan_qr_screen.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -265,6 +266,19 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
     }
   }
 
+  Future<void> _scanCode() async {
+    if (!_currentOwner || !_ready || _busy || _unknownSubmission || _payment != null) return;
+    final code = await Navigator.of(context).push<String>(
+      MaterialPageRoute(builder: (_) => const ScanQrScreen()),
+    );
+    if (_currentOwner && _ready && !_busy && !_unknownSubmission && _payment == null && code != null) {
+      setState(() {
+        _code.text = code;
+        _message = null;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final wallet = _wallet;
@@ -300,12 +314,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             const SizedBox(height: 16),
             ElevatedButton(
               onPressed: _busy ? null : _activate,
-              style: ElevatedButton.styleFrom(
-                disabledBackgroundColor: Theme.of(context).colorScheme.primary,
-                disabledForegroundColor: Theme.of(context)
-                    .colorScheme
-                    .onPrimary,
-              ),
               child: _busy
                   ? const Row(
                       mainAxisSize: MainAxisSize.min,
@@ -390,11 +398,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                     ),
                     decoration: InputDecoration(
                       labelText: 'Purchase amount (${wallet!['assetCode']})',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
                     ),
                     validator: (value) =>
                         parseMinorAmount(
@@ -406,6 +409,12 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                         : null,
                   ),
                   const SizedBox(height: 16),
+                  OutlinedButton.icon(
+                    onPressed: _busy ? null : _scanCode,
+                    icon: const Icon(Icons.qr_code_scanner_rounded),
+                    label: const Text('Scan QR code'),
+                  ),
+                  const SizedBox(height: 16),
                   TextFormField(
                     controller: _code,
                     textCapitalization: TextCapitalization.characters,
@@ -415,14 +424,9 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                       fontWeight: FontWeight.w700,
                       letterSpacing: 1,
                     ),
-                    decoration: InputDecoration(
+                    decoration: const InputDecoration(
                       labelText: 'Customer payment code',
                       hintText: 'ABC234-123456',
-                      filled: true,
-                      fillColor: Colors.white,
-                      border: OutlineInputBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
                     ),
                     validator: (value) =>
                         RegExp(r'^[A-Z0-9]{4,12}-[0-9]{6}$')
@@ -453,9 +457,24 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
                   ),
                   const SizedBox(height: 6),
                   SelectableText('${wallet['address']}'),
-                  TextButton(
-                    onPressed: () => context.go(AppRoutes.wallet),
-                    child: const Text('Change receiving wallet'),
+                  const SizedBox(height: 2),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton(
+                      onPressed: () => context.go(AppRoutes.wallet),
+                      style: TextButton.styleFrom(
+                        foregroundColor: AppColours.cobalt,
+                        padding: EdgeInsets.zero,
+                        minimumSize: Size.zero,
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        visualDensity: VisualDensity.compact,
+                        textStyle: const TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      child: const Text('Change receiving wallet'),
+                    ),
                   ),
                 ],
               ),
@@ -463,16 +482,6 @@ class _EnterCodeScreenState extends State<EnterCodeScreen> {
             const SizedBox(height: 20),
             ElevatedButton(
               onPressed: _busy ? null : _redeem,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: cobalt,
-                foregroundColor: Colors.white,
-                disabledBackgroundColor: cobalt,
-                disabledForegroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(52),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(12),
-                ),
-              ),
               child: _busy
                   ? const Row(
                       mainAxisSize: MainAxisSize.min,

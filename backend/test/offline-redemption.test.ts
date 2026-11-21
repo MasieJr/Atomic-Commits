@@ -5,10 +5,13 @@ import { test, type TestContext } from 'node:test';
 
 import { Pool } from 'pg';
 
-import { formatPaymentCode, generateTotp } from '../src/domain/payment-engine/totp';
+import { formatPaymentCode, generateTotp, TOTP_LONG_TIME_STEP_MS, TOTP_TIME_STEP_MS, verifyAnySupportedTotpPeriod } from '../src/domain/payment-engine/totp';
 import { createApp } from '../src/app';
 import { createDataEncryption } from '../src/services/data-encryption';
 import { createGrantAuthorityStore } from '../src/services/grant-authority-store';
+import { createOfflineRedemptionService } from '../src/services/offline-redemption';
+import { ApiError } from '../src/errors/api-error';
+import { createTotpReplayDigests } from '../src/services/totp-replay-digests';
 import {
   ProviderRejectedError,
   ProviderUnknownError,
@@ -117,7 +120,7 @@ class FakeProvider implements RedemptionProvider {
   }
 }
 
-async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
+async function fixture(t: TestContext, opts: { drift?: 0 | 1; redemptionNow?: () => number } = {}) {
   const keyB64 = randomBytes(32).toString('base64');
   const provider = new FakeProvider();
   const logs: Record<string, unknown>[] = [];
@@ -131,6 +134,7 @@ async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
     publicBaseUrl: 'https://api.example.test',
     emailVerification: { sendCode: async () => {}, verifyCode: async () => {} },
     ...(opts.drift !== undefined ? { allowedDriftSteps: opts.drift } : {}),
+    redemptionNow: opts.redemptionNow,
     log: (event, fields) => logs.push({ event, ...fields }),
   });
   const server = app.listen(0, '127.0.0.1');
@@ -234,8 +238,57 @@ async function fixture(t: TestContext, opts: { drift?: 0 | 1 } = {}) {
       expiresAtEpochMs: Date.now() - 1_000,
     });
 
-  return { call, pool, provider, store, logs, register, linkForTest, payerWithDevice, merchant, redeem, reconcilePayments, reconcileRevocations, base, expireStoredToken };
+  return { call, pool, provider, store, logs, register, linkForTest, payerWithDevice, merchant, redeem, reconcilePayments, reconcileRevocations, base, expireStoredToken, keyB64 };
 }
+
+test('recent synthetic cross-period claims block reuse across the full drift window', { skip }, async (t) => {
+  for (const period of [TOTP_TIME_STEP_MS, TOTP_LONG_TIME_STEP_MS]) {
+    const f = await fixture(t);
+    const payer = await f.payerWithDevice();
+    const shop = await f.merchant();
+    // Freeze the service clock and select a step where verifier precedence does
+    // not mask the intended period, even if the generated digits collide.
+    let now = Date.now();
+    let generated = generateTotp(payer.packet.secret, now, period);
+    for (let i = 0; i < 100; i++) {
+      const verified = verifyAnySupportedTotpPeriod(payer.packet.secret, generated.code, now, 1);
+      if (verified.valid && verified.periodMs === period) break;
+      now += TOTP_TIME_STEP_MS;
+      generated = generateTotp(payer.packet.secret, now, period);
+    }
+    const verified = verifyAnySupportedTotpPeriod(payer.packet.secret, generated.code, now, 1);
+    assert.ok(verified.valid && verified.periodMs === period);
+    const keys = new Map([[1, Buffer.from(f.keyB64, 'base64')]]);
+    const service = createOfflineRedemptionService({
+      pool: f.pool, encryption: createDataEncryption(keys, 1), authorities: f.store,
+      provider: f.provider, dataKeys: keys, now: () => now, confirmTimeoutMs: 0,
+    });
+    const device = await f.pool.query('SELECT id FROM app_private.totp_devices WHERE prefix = $1', [payer.packet.prefix]);
+    const merchant = await f.pool.query('SELECT id FROM app_private.merchants WHERE user_id = $1', [shop.userId]);
+    const digest = createTotpReplayDigests(keys)(device.rows[0].id, generated.code).get(1);
+    const previousPeriod = period === TOTP_TIME_STEP_MS ? TOTP_LONG_TIME_STEP_MS : TOTP_TIME_STEP_MS;
+    const claim = await f.pool.query(
+      `INSERT INTO app_private.totp_code_claims (device_id, period_seconds, time_step, code_digest, merchant_id, request_fingerprint, state, created_at)
+       VALUES ($1, $2, 0, $3, $4, 'synthetic-history', 'COMPLETED', now() - interval '30 minutes 45 seconds') RETURNING id`,
+      [device.rows[0].id, previousPeriod / 1000, digest, merchant.rows[0].id],
+    );
+    const code = formatPaymentCode(payer.packet.prefix, generated.code);
+    const redeem = (key = randomUUID()) => service.redeem({ userId: shop.userId, idempotencyKey: key,
+      body: { credentialType: 'totp-v1', paymentCode: code, merchantReceive: EUR('10') } });
+    const results = await Promise.allSettled([redeem(), redeem()]);
+    for (const result of results) {
+      assert.equal(result.status, 'rejected');
+      assert.ok(result.reason instanceof ApiError && result.reason.code === 'CODE_ALREADY_USED');
+    }
+    assert.equal(f.provider.submits.length, 0);
+
+    await f.pool.query("UPDATE app_private.totp_code_claims SET created_at = now() - interval '32 minutes' WHERE id = $1", [claim.rows[0].id]);
+    const key = randomUUID();
+    assert.equal((await redeem(key)).created, true);
+    assert.equal((await redeem(key)).created, false);
+    assert.equal(f.provider.submits.length, 1);
+  }
+});
 
 test('happy path: merchant redeems an offline code, provider confirms, spend is recorded', { skip }, async (t) => {
   const f = await fixture(t);
@@ -393,7 +446,6 @@ test('the cumulative cap is enforced across payments', { skip }, async (t) => {
   assert.equal(((await first.json()) as { status: string }).status, 'SUCCEEDED');
 
   /* wait for the next 30 s time step so the code is genuinely new */
-  await f.pool.query("UPDATE app_private.totp_code_claims SET created_at = now() - interval '1 hour'");
   const nextStep = (Math.floor(Date.now() / 30_000) + 1) * 30_000;
   await new Promise((r) => setTimeout(r, nextStep - Date.now() + 50));
   /* R1.14 left: reservation is min(perPayment, remaining) = 114 < quote 186 */
@@ -879,10 +931,19 @@ test('approvals are private and inputs are validated', { skip }, async (t) => {
 /* ---------- verification fixes ---------- */
 
 test('a code from the previous 30 s window is still accepted (default tolerance), once only', { skip }, async (t) => {
-  const f = await fixture(t);
+  let now = Date.now();
+  const f = await fixture(t, { redemptionNow: () => now });
   const payer = await f.payerWithDevice();
   const shop = await f.merchant();
-  const previous = payer.codeAt(-1);
+  now = Date.now();
+  // Avoid chance collisions with other accepted steps or the long-period code.
+  for (let i = 0; i < 100; i++) {
+    const old = generateTotp(payer.packet.secret, now - 2 * TOTP_TIME_STEP_MS).code;
+    if (!verifyAnySupportedTotpPeriod(payer.packet.secret, old, now, 1).valid) break;
+    now += TOTP_TIME_STEP_MS;
+  }
+  const previous = formatPaymentCode(payer.packet.prefix, generateTotp(payer.packet.secret, now - TOTP_TIME_STEP_MS).code);
+  const old = formatPaymentCode(payer.packet.prefix, generateTotp(payer.packet.secret, now - 2 * TOTP_TIME_STEP_MS).code);
 
   const res = await f.redeem(shop.token, previous);
   assert.equal(res.status, 202);
@@ -892,8 +953,8 @@ test('a code from the previous 30 s window is still accepted (default tolerance)
   assert.equal(again.status, 409);
   assert.equal(((await again.json()) as { code: string }).code, 'CODE_ALREADY_USED');
   /* two windows old: too old */
-  const old = await f.redeem(shop.token, payer.codeAt(-2));
-  assert.equal(old.status, 422);
+  const expired = await f.redeem(shop.token, old);
+  assert.equal(expired.status, 422);
   assert.equal(f.provider.submits.length, 1);
 });
 

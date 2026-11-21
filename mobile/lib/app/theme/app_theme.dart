@@ -65,7 +65,20 @@ abstract final class AppTheme {
 
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppColours.primary,
+          backgroundColor: AppColours.cobalt,
+          foregroundColor: AppColours.onPrimary,
+          elevation: 0,
+          minimumSize: const Size(double.infinity, AppSpacing.buttonHeight),
+          textStyle: AppTypography.button,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppSpacing.buttonRadius),
+          ),
+        ),
+      ),
+
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          backgroundColor: AppColours.cobalt,
           foregroundColor: AppColours.onPrimary,
           elevation: 0,
           minimumSize: const Size(double.infinity, AppSpacing.buttonHeight),
@@ -78,10 +91,10 @@ abstract final class AppTheme {
 
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: OutlinedButton.styleFrom(
-          foregroundColor: AppColours.primary,
+          foregroundColor: AppColours.cobalt,
           minimumSize: const Size(double.infinity, AppSpacing.buttonHeight),
           textStyle: AppTypography.button,
-          side: const BorderSide(color: AppColours.border),
+          side: const BorderSide(color: AppColours.fieldBorder),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppSpacing.buttonRadius),
           ),
@@ -97,22 +110,35 @@ abstract final class AppTheme {
 
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: AppColours.surface,
+        fillColor: AppColours.fieldFill,
         contentPadding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.lg,
           vertical: AppSpacing.lg,
         ),
+        hintStyle: const TextStyle(
+          color: AppColours.fieldHint,
+          fontWeight: FontWeight.w400,
+        ),
+        labelStyle: const TextStyle(color: AppColours.labelInk),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSpacing.inputRadius),
-          borderSide: const BorderSide(color: AppColours.border),
+          borderSide: const BorderSide(color: AppColours.fieldBorder),
         ),
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSpacing.inputRadius),
-          borderSide: const BorderSide(color: AppColours.border),
+          borderSide: const BorderSide(color: AppColours.fieldBorder),
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppSpacing.inputRadius),
-          borderSide: const BorderSide(color: AppColours.primary, width: 1.5),
+          borderSide: const BorderSide(color: AppColours.fieldFocus, width: 1.5),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppSpacing.inputRadius),
+          borderSide: const BorderSide(color: AppColours.error),
+        ),
+        focusedErrorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(AppSpacing.inputRadius),
+          borderSide: const BorderSide(color: AppColours.error, width: 1.5),
         ),
       ),
 
