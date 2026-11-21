@@ -164,7 +164,9 @@ class _SignupScreenState extends State<SignupScreen> {
 
       setState(() => _isLoading = false);
 
-      context.go(AppRoutes.wallet);
+      if (ModalRoute.of(context)?.isCurrent == true) {
+        context.go(AppRoutes.wallet);
+      }
     } on DioException catch (error) {
       if (!mounted) return;
 

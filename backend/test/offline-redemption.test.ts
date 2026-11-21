@@ -50,13 +50,18 @@ class FakeProvider implements RedemptionProvider {
   finishBehaviour: 'ok' | 'fail' | 'small' = 'ok';
   /* what findOutgoingByQuote reports: 'found' = provider did create it */
   lookup: 'found' | 'missing' | 'error' = 'missing';
+  onQuote?: (reference: string) => Promise<void>;
+  ensureUnpaidIncomingClosed?: NonNullable<RedemptionProvider['ensureUnpaidIncomingClosed']>;
   private n = 0;
 
-  async prepareQuote() {
+  async prepareQuote(args: Parameters<RedemptionProvider['prepareQuote']>[0]) {
     if (this.quoteFails) throw new Error('quote down');
     this.n += 1;
+    const incomingPaymentId = `https://ilp.interledger-test.dev/incoming/${this.n}`;
+    await args.onIncomingCreated?.(incomingPaymentId);
+    await this.onQuote?.(args.reference);
     return {
-      incomingPaymentId: `https://ilp.interledger-test.dev/incoming/${this.n}`,
+      incomingPaymentId,
       quoteId: `https://ilp.interledger-test.dev/quotes/${this.n}`,
       debit: this.debit,
       receive: EUR('10'),
@@ -753,6 +758,151 @@ test('the background revocation pass never cancels a grant that is not revoked',
   ]);
   assert.equal(rows[0].status, 'ACTIVE');
   assert.equal(rows[0].provider_revocation, 'FAILED');
+});
+
+function gate() {
+  let release!: () => void;
+  const wait = new Promise<void>((resolve) => { release = resolve; });
+  return { wait, release };
+}
+
+async function pausedPreparation(t: TestContext) {
+  const entered = gate();
+  const resume = gate();
+  t.after(() => resume.release());
+  const f = await fixture(t);
+  const payer = await f.payerWithDevice();
+  const shop = await f.merchant();
+  let attemptId = '';
+  f.provider.onQuote = async (reference) => {
+    attemptId = reference;
+    entered.release();
+    await resume.wait;
+  };
+  const redemption = f.redeem(shop.token, payer.code());
+  await entered.wait;
+  assert.ok(attemptId);
+  return { f, payer, attemptId, redemption, resume };
+}
+
+async function preparationState(f: Awaited<ReturnType<typeof fixture>>, attemptId: string) {
+  const { rows } = await f.pool.query(
+    `SELECT a.status, a.error_code, a.preparation_phase, a.provider_incoming_ref,
+            c.state AS claim_state, r.state AS reservation_state
+       FROM app_private.payment_attempts a
+       JOIN app_private.totp_code_claims c ON c.payment_attempt_id = a.id
+       JOIN app_private.spending_reservations r ON r.claim_id = c.id WHERE a.id = $1`, [attemptId],
+  );
+  assert.equal(rows.length, 1);
+  return rows[0];
+}
+
+test('expired RESERVED preparation is reclaimed and releases its claim and hold without a debit', { skip }, async (t) => {
+  const { f, payer, attemptId, redemption, resume } = await pausedPreparation(t);
+  await f.pool.query(
+    `UPDATE app_private.payment_attempts SET preparation_phase = 'RESERVED', provider_incoming_ref = NULL,
+       preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1`, [attemptId],
+  );
+  await f.reconcilePayments();
+  const state = await preparationState(f, attemptId);
+  assert.equal(state.status, 'FAILED');
+  assert.equal(state.error_code, 'PREPARATION_ABANDONED');
+  assert.equal(state.claim_state, 'RELEASED');
+  assert.equal(state.reservation_state, 'RELEASED');
+  resume.release();
+  await redemption;
+  assert.equal(f.provider.submits.length, 0);
+  const grant = await f.pool.query('SELECT cumulative_spent FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(grant.rows[0].cumulative_spent, '0');
+});
+
+test('concurrent recovery closes a known incoming once and fences the late quote worker', { skip }, async (t) => {
+  const { f, payer, attemptId, redemption, resume } = await pausedPreparation(t);
+  const cleanupEntered = gate();
+  const cleanupResume = gate();
+  t.after(() => cleanupResume.release());
+  const closed: string[] = [];
+  f.provider.ensureUnpaidIncomingClosed = async ({ incomingPaymentId, merchantWalletAddress }) => {
+    assert.equal(merchantWalletAddress, 'https://ilp.interledger-test.dev/shop');
+    closed.push(incomingPaymentId);
+    cleanupEntered.release();
+    await cleanupResume.wait;
+  };
+  const before = await preparationState(f, attemptId);
+  assert.equal(before.preparation_phase, 'INCOMING_KNOWN');
+  await f.pool.query("UPDATE app_private.payment_attempts SET preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1", [attemptId]);
+  const first = f.reconcilePayments();
+  await cleanupEntered.wait;
+  await f.reconcilePayments();
+  const live = await preparationState(f, attemptId);
+  assert.equal(live.preparation_phase, 'RECOVERING');
+  assert.equal(live.reservation_state, 'RESERVED');
+  assert.equal(live.claim_state, 'CLAIMED');
+  assert.deepEqual(closed, [before.provider_incoming_ref]);
+  cleanupResume.release();
+  await first;
+  const recovered = await preparationState(f, attemptId);
+  assert.equal(recovered.status, 'FAILED');
+  assert.equal(recovered.reservation_state, 'RELEASED');
+  assert.equal(recovered.claim_state, 'RELEASED');
+  resume.release();
+  await redemption;
+  assert.equal(f.provider.submits.length, 0);
+  const grant = await f.pool.query('SELECT cumulative_spent FROM app_private.payment_grants WHERE id = $1', [payer.grantId]);
+  assert.equal(grant.rows[0].cumulative_spent, '0');
+});
+
+test('uncertain incoming cleanup retains the hold and retries after the recovery lease expires', { skip }, async (t) => {
+  const { f, attemptId, redemption, resume } = await pausedPreparation(t);
+  let calls = 0;
+  await f.pool.query("UPDATE app_private.payment_attempts SET preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1", [attemptId]);
+  await f.reconcilePayments();
+  let state = await preparationState(f, attemptId);
+  assert.equal(state.status, 'AWAITING_AUTHORIZATION');
+  assert.equal(state.reservation_state, 'RESERVED');
+  await f.pool.query("UPDATE app_private.payment_attempts SET preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1", [attemptId]);
+  f.provider.ensureUnpaidIncomingClosed = async () => {
+    calls += 1;
+    if (calls === 1) throw new ProviderUnknownError('unavailable');
+  };
+  await f.reconcilePayments();
+  state = await preparationState(f, attemptId);
+  assert.equal(state.status, 'AWAITING_AUTHORIZATION');
+  assert.equal(state.reservation_state, 'RESERVED');
+  assert.equal(state.claim_state, 'CLAIMED');
+  resume.release();
+  await redemption;
+  assert.equal(f.provider.submits.length, 0);
+  await f.reconcilePayments();
+  assert.equal(calls, 1);
+  assert.equal(f.provider.submits.length, 0);
+  await f.pool.query("UPDATE app_private.payment_attempts SET preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1", [attemptId]);
+  await f.reconcilePayments();
+  state = await preparationState(f, attemptId);
+  assert.equal(calls, 2);
+  assert.equal(state.status, 'FAILED');
+  assert.equal(state.reservation_state, 'RELEASED');
+  assert.equal(f.provider.submits.length, 0);
+});
+
+test('unknown incoming creation and legacy preparations are not reclaimed', { skip }, async (t) => {
+  for (const legacy of [false, true]) {
+    const { f, attemptId, redemption, resume } = await pausedPreparation(t);
+    await f.pool.query(
+      legacy
+        ? 'UPDATE app_private.payment_attempts SET preparation_phase = NULL, preparation_owner = NULL, preparation_lease_until = NULL WHERE id = $1'
+        : "UPDATE app_private.payment_attempts SET preparation_phase = 'CREATING_INCOMING', provider_incoming_ref = NULL, preparation_lease_until = clock_timestamp() - interval '1 second' WHERE id = $1",
+      [attemptId],
+    );
+    await f.reconcilePayments();
+    const state = await preparationState(f, attemptId);
+    assert.equal(state.status, 'AWAITING_AUTHORIZATION');
+    assert.equal(state.reservation_state, 'RESERVED');
+    assert.equal(state.claim_state, 'CLAIMED');
+    resume.release();
+    await redemption;
+    assert.equal(f.provider.submits.length, 0);
+  }
 });
 
 test('crash recovery: an unclear submit that did reach the provider is found and settled once', { skip }, async (t) => {

@@ -76,6 +76,9 @@ export class ProviderUnknownError extends Error {
   }
 }
 
+/** Preparation failed before an incoming payment creation request was made. */
+export class ProviderNoIncomingError extends Error {}
+
 export interface RedemptionProvider {
   /** Create a fresh incoming payment at the merchant and a quote from the payer. */
   prepareQuote(args: {
@@ -83,6 +86,7 @@ export interface RedemptionProvider {
     merchantWalletAddress: string;
     merchantReceive: Money;
     reference: string;
+    onIncomingCreated?: (incomingPaymentId: string) => Promise<void>;
   }): Promise<PreparedQuote>;
 
   /**
@@ -127,6 +131,9 @@ export interface RedemptionProvider {
 
   /** Close an unpaid incoming payment at the merchant (best effort, after a failed attempt). */
   completeIncoming(args: { incomingPaymentId: string; merchantWalletAddress: string }): Promise<void>;
+
+  /** Confirm a known incoming payment is closed and unpaid, or throw if uncertain. */
+  ensureUnpaidIncomingClosed?(args: { incomingPaymentId: string; merchantWalletAddress: string }): Promise<void>;
 
   /** Resolve a wallet address to its canonical id, asset and authorization server. */
   lookupWallet(address: string): Promise<WalletInfo>;
