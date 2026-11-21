@@ -259,12 +259,17 @@ class _SignupScreenState extends State<SignupScreen> {
                                   apiOrigin: Uri.parse(ApiEndpoints.baseUrl)
                                       .replace(path: ''),
                                   enabled: !_isLoading,
-                                  onComplete: (user, token) async {
-                                    await getIt<AuthController>()
-                                        .completeGoogleSignIn(user, token);
-                                    if (!context.mounted) return;
-                                    context.go(AppRoutes.home);
-                                  },
+                                  onComplete:
+                                      (user, token, refreshToken) async {
+                                        await getIt<AuthController>()
+                                            .completeGoogleSignIn(
+                                              user,
+                                              token,
+                                              refreshToken,
+                                            );
+                                        if (!context.mounted) return;
+                                        context.go(AppRoutes.home);
+                                      },
                                 ),
                                 const SizedBox(height: 16),
                                 CustomTextField(

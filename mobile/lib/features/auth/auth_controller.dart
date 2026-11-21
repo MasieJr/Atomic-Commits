@@ -7,7 +7,11 @@ import 'models/user_model.dart';
 class AuthController extends ChangeNotifier {
   final AuthRepository _repository;
 
-  AuthController(this._repository);
+  AuthController(this._repository) {
+    _repository.onSessionExpired = () {
+      if (!_loggingOut) logout();
+    };
+  }
 
   UserModel? _user;
   bool _isInitialized = false;
@@ -79,7 +83,11 @@ class AuthController extends ChangeNotifier {
     }
   }
 
-  Future<void> completeGoogleSignIn(UserModel user, String token) async {
+  Future<void> completeGoogleSignIn(
+    UserModel user,
+    String token,
+    String? refreshToken,
+  ) async {
     if (_loggingOut || _authenticating || _user != null) {
       throw StateError('Authentication unavailable');
     }
@@ -90,7 +98,7 @@ class AuthController extends ChangeNotifier {
         if (generation != _generation || _user != null) {
           throw StateError('Account changed');
         }
-        await _repository.saveGoogleSession(user, token);
+        await _repository.saveGoogleSession(user, token, refreshToken);
         if (generation != _generation) throw StateError('Account changed');
         _user = user;
         _newAccount = false;
@@ -138,6 +146,7 @@ class AuthController extends ChangeNotifier {
     if (_loggingOut) return Future.error(StateError('Logout in progress'));
     _loggingOut = true;
     _generation++;
+    _repository.invalidate();
     notifyListeners();
     final result = _serialize(() async {
       try {

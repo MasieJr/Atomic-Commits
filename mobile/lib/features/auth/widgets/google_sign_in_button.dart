@@ -18,7 +18,12 @@ class GoogleSignInButton extends StatefulWidget {
   });
 
   final Uri apiOrigin;
-  final Future<void> Function(UserModel user, String token) onComplete;
+  final Future<void> Function(
+    UserModel user,
+    String token,
+    String? refreshToken,
+  )
+  onComplete;
   final bool enabled;
 
   @override
@@ -37,7 +42,8 @@ class _GoogleSignInButtonState extends State<GoogleSignInButton>
     WidgetsBinding.instance.addObserver(this);
     _flow = GoogleSignInFlow(
       apiOrigin: widget.apiOrigin,
-      onComplete: (user, token) => widget.onComplete(user, token),
+      onComplete: (user, token, refreshToken) =>
+          widget.onComplete(user, token, refreshToken),
     );
     _flow.addListener(_changed);
     _flow.setAppActive(
